@@ -25,6 +25,9 @@ module Dependabot
       # See https://www.terraform.io/docs/modules/sources.html#http-urls for
       # details of how Terraform handle HTTP(S) sources for modules
       def self.get_proxied_source(raw_source) # rubocop:disable Metrics/AbcSize
+        if raw_source.class == URI::HTTPS
+          return raw_source.request_uri
+        end
         return raw_source unless raw_source.start_with?("http")
 
         uri = URI.parse(raw_source.split(%r{(?<!:)//}).first)
