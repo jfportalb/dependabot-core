@@ -6,7 +6,6 @@ require "dependabot/dependency"
 require "dependabot/file_parsers"
 require "dependabot/file_parsers/base"
 require "dependabot/errors"
-require "dependabot/docker/utils/credentials_finder"
 
 module Dependabot
   module Docker
@@ -15,27 +14,25 @@ module Dependabot
 
       # Details of Docker regular expressions is at
       # https://github.com/docker/distribution/blob/master/reference/regexp.go
-      DOMAIN_COMPONENT =
-        /(?:[[:alnum:]]|[[:alnum:]][[[:alnum:]]-]*[[:alnum:]])/.freeze
-      DOMAIN = /(?:#{DOMAIN_COMPONENT}(?:\.#{DOMAIN_COMPONENT})+)/.freeze
-      REGISTRY = /(?<registry>#{DOMAIN}(?::\d+)?)/.freeze
+      DOMAIN_COMPONENT = /(?:[[:alnum:]]|[[:alnum:]][[[:alnum:]]-]*[[:alnum:]])/
+      DOMAIN = /(?:#{DOMAIN_COMPONENT}(?:\.#{DOMAIN_COMPONENT})+)/
+      REGISTRY = /(?<registry>#{DOMAIN}(?::\d+)?)/
 
-      NAME_COMPONENT = /(?:[a-z\d]+(?:(?:[._]|__|[-]*)[a-z\d]+)*)/.freeze
-      IMAGE = %r{(?<image>#{NAME_COMPONENT}(?:/#{NAME_COMPONENT})*)}.freeze
+      NAME_COMPONENT = /(?:[a-z\d]+(?:(?:[._]|__|[-]*)[a-z\d]+)*)/
+      IMAGE = %r{(?<image>#{NAME_COMPONENT}(?:/#{NAME_COMPONENT})*)}
 
-      FROM = /FROM/i.freeze
-      PLATFORM = /--platform\=(?<platform>\S+)/.freeze
-      TAG = /:(?<tag>[\w][\w.-]{0,127})/.freeze
-      DIGEST = /@(?<digest>[^\s]+)/.freeze
-      NAME = /\s+AS\s+(?<name>[\w-]+)/.freeze
+      FROM = /FROM/i
+      PLATFORM = /--platform\=(?<platform>\S+)/
+      TAG = /:(?<tag>[\w][\w.-]{0,127})/
+      DIGEST = /(?<digest>[0-9a-f]{64})/
+      NAME = /\s+AS\s+(?<name>[\w-]+)/
       FROM_LINE =
         %r{^#{FROM}\s+(#{PLATFORM}\s+)?(#{REGISTRY}/)?
-          #{IMAGE}#{TAG}?#{DIGEST}?#{NAME}?}x.freeze
+          #{IMAGE}#{TAG}?(?:@sha256:#{DIGEST})?#{NAME}?}x
 
-      AWS_ECR_URL = /dkr\.ecr\.(?<region>[^.]+)\.amazonaws\.com/.freeze
+      AWS_ECR_URL = /dkr\.ecr\.(?<region>[^.]+)\.amazonaws\.com/
 
-      IMAGE_SPEC =
-        %r{^(#{REGISTRY}/)?#{IMAGE}#{TAG}?#{DIGEST}?#{NAME}?}x.freeze
+      IMAGE_SPEC = %r{^(#{REGISTRY}/)?#{IMAGE}#{TAG}?(?:@sha256:#{DIGEST})?#{NAME}?}x
 
       def parse
         dependency_set = DependencySet.new
@@ -79,13 +76,7 @@ module Dependabot
       end
 
       def version_from(parsed_from_line)
-        return parsed_from_line.fetch("tag") if parsed_from_line.fetch("tag")
-
-        version_from_digest(
-          registry: parsed_from_line.fetch("registry"),
-          image: parsed_from_line.fetch("image"),
-          digest: parsed_from_line.fetch("digest")
-        )
+        parsed_from_line.fetch("tag") || parsed_from_line.fetch("digest")
       end
 
       def source_from(parsed_from_line)
@@ -98,60 +89,6 @@ module Dependabot
         source[:digest] = parsed_from_line.fetch("digest") if parsed_from_line.fetch("digest")
 
         source
-      end
-
-      def version_from_digest(registry:, image:, digest:)
-        return unless digest
-
-        repo = docker_repo_name(image, registry)
-        client = docker_registry_client(registry)
-        client.tags(repo, auto_paginate: true).fetch("tags").find do |tag|
-          digest == client.digest(repo, tag)
-        rescue DockerRegistry2::NotFound
-          # Shouldn't happen, but it does. Example of existing tag with
-          # no manifest is "library/python", "2-windowsservercore".
-          false
-        end
-      rescue DockerRegistry2::RegistryAuthenticationException,
-             RestClient::Forbidden
-        raise if standard_registry?(registry)
-
-        raise PrivateSourceAuthenticationFailure, registry
-      end
-
-      def docker_repo_name(image, registry)
-        return image unless standard_registry?(registry)
-        return image unless image.split("/").count < 2
-
-        "library/#{image}"
-      end
-
-      def docker_registry_client(registry)
-        if registry
-          credentials = registry_credentials(registry)
-
-          DockerRegistry2::Registry.new(
-            "https://#{registry}",
-            user: credentials&.fetch("username", nil),
-            password: credentials&.fetch("password", nil)
-          )
-        else
-          DockerRegistry2::Registry.new("https://registry.hub.docker.com")
-        end
-      end
-
-      def registry_credentials(registry_url)
-        credentials_finder.credentials_for_registry(registry_url)
-      end
-
-      def credentials_finder
-        @credentials_finder ||= Utils::CredentialsFinder.new(credentials)
-      end
-
-      def standard_registry?(registry)
-        return true if registry.nil?
-
-        registry == "registry.hub.docker.com"
       end
 
       def check_required_files
@@ -214,6 +151,8 @@ module Dependabot
         images =
           if !img.nil? && img.is_a?(String) && !img.empty?
             [img]
+          elsif !img.nil? && img.is_a?(Hash) && !img.empty?
+            parse_helm(img)
           else
             []
           end
@@ -224,6 +163,22 @@ module Dependabot
       def manifest_files
         # Dependencies include both Dockerfiles and yaml, select yaml.
         dependency_files.select { |f| f.type == "file" && f.name.match?(/^[^\.]+\.ya?ml/i) }
+      end
+
+      def parse_helm(img_hash)
+        repo = img_hash.fetch("repository", nil)
+        tag = img_hash.key?("tag") ? img_hash.fetch("tag", nil) : img_hash.fetch("version", nil)
+        registry = img_hash.fetch("registry", nil)
+
+        if !repo.nil? && !registry.nil? && !tag.nil?
+          ["#{registry}/#{repo}:#{tag}"]
+        elsif !repo.nil? && !tag.nil?
+          ["#{repo}:#{tag}"]
+        elsif !repo.nil?
+          [repo]
+        else
+          []
+        end
       end
     end
   end

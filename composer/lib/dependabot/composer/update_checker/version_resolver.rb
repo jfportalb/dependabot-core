@@ -29,18 +29,18 @@ module Dependabot
           %r{
             (?<=PHP\sextension\s)ext\-[^\s\/]+\s.*?\s(?=is|but)|
             (?<=requires\s)php(?:\-[^\s\/]+)?\s.*?\s(?=but)
-          }x.freeze
+          }x
         MISSING_IMPLICIT_PLATFORM_REQ_REGEX =
           %r{
             (?<!with|for|by)\sext\-[^\s\/]+\s.*?\s(?=->)|
             (?<=requires\s)php(?:\-[^\s\/]+)?\s.*?\s(?=->)| # composer v1
             (?<=require\s)php(?:\-[^\s\/]+)?\s.*?\s(?=->) # composer v2
-          }x.freeze
-        VERSION_REGEX = /[0-9]+(?:\.[A-Za-z0-9\-_]+)*/.freeze
+          }x
+        VERSION_REGEX = /[0-9]+(?:\.[A-Za-z0-9\-_]+)*/
         SOURCE_TIMED_OUT_REGEX =
-          /The "(?<url>[^"]+packages\.json)".*timed out/.freeze
-        FAILED_GIT_CLONE_WITH_MIRROR = /Failed to execute git clone --(mirror|checkout)[^']*'(?<url>.*?)'/.freeze
-        FAILED_GIT_CLONE = /Failed to clone (?<url>.*?) via/.freeze
+          /The "(?<url>[^"]+packages\.json)".*timed out/
+        FAILED_GIT_CLONE_WITH_MIRROR = /Failed to execute git clone --(mirror|checkout)[^']*'(?<url>.*?)'/
+        FAILED_GIT_CLONE = /Failed to clone (?<url>.*?) via/
 
         def initialize(credentials:, dependency:, dependency_files:,
                        requirements_to_unlock:, latest_allowable_version:)
@@ -240,8 +240,6 @@ module Dependabot
         # rubocop:disable Metrics/CyclomaticComplexity
         # rubocop:disable Metrics/MethodLength
         def handle_composer_errors(error)
-          sanitized_message = remove_url_credentials(error.message)
-
           # Special case for Laravel Nova, which will fall back to attempting
           # to close a private repo if given invalid (or no) credentials
           if error.message.include?("github.com/laravel/nova.git")
@@ -255,7 +253,7 @@ module Dependabot
             dependency_url = error.message.match(FAILED_GIT_CLONE).named_captures.fetch("url")
             raise Dependabot::GitDependenciesNotReachable, clean_dependency_url(dependency_url)
           elsif unresolvable_error?(error)
-            raise Dependabot::DependencyFileNotResolvable, sanitized_message
+            raise Dependabot::DependencyFileNotResolvable, error.message
           elsif error.message.match?(MISSING_EXPLICIT_PLATFORM_REQ_REGEX)
             # These errors occur when platform requirements declared explicitly
             # in the composer.json aren't met.
@@ -519,10 +517,6 @@ module Dependabot
           credentials.
             select { |cred| cred["type"] == "composer_repository" }.
             select { |cred| cred["password"] }
-        end
-
-        def remove_url_credentials(message)
-          message.gsub(%r{(?<=://)[^\s]*:[^\s]*(?=@)}, "****")
         end
       end
     end

@@ -112,9 +112,9 @@ module Dependabot
         end
 
         def filter_lower_versions(versions_array)
-          return versions_array unless dependency.version && version_class.correct?(dependency.version)
+          return versions_array unless dependency.numeric_version
 
-          versions_array.select { |version| version > version_class.new(dependency.version) }
+          versions_array.select { |version| version > dependency.numeric_version }
         end
 
         def filter_out_of_range_versions(versions_array)
@@ -244,13 +244,11 @@ module Dependabot
         end
 
         def version_class
-          Utils.version_class_for_package_manager(dependency.package_manager)
+          dependency.version_class
         end
 
         def requirement_class
-          Utils.requirement_class_for_package_manager(
-            dependency.package_manager
-          )
+          dependency.requirement_class
         end
       end
     end

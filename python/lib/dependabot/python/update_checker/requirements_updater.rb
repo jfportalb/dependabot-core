@@ -9,8 +9,8 @@ module Dependabot
   module Python
     class UpdateChecker
       class RequirementsUpdater
-        PYPROJECT_OR_SEPARATOR = /(?<=[a-zA-Z0-9*])\s*\|+/.freeze
-        PYPROJECT_SEPARATOR = /#{PYPROJECT_OR_SEPARATOR}|,/.freeze
+        PYPROJECT_OR_SEPARATOR = /(?<=[a-zA-Z0-9*])\s*\|+/
+        PYPROJECT_SEPARATOR = /#{PYPROJECT_OR_SEPARATOR}|,/
 
         class UnfixableRequirement < StandardError; end
 
@@ -30,6 +30,8 @@ module Dependabot
         end
 
         def updated_requirements
+          return requirements if update_strategy == :lockfile_only
+
           requirements.map do |req|
             case req[:file]
             when /setup\.(?:py|cfg)$/ then updated_setup_requirement(req)
@@ -88,10 +90,17 @@ module Dependabot
           case update_strategy
           when :widen_ranges then widen_pyproject_requirement(req)
           when :bump_versions then update_pyproject_version(req)
+          when :bump_versions_if_necessary then update_pyproject_version_if_needed(req)
           else raise "Unexpected update strategy: #{update_strategy}"
           end
         rescue UnfixableRequirement
           req.merge(requirement: :unfixable)
+        end
+
+        def update_pyproject_version_if_needed(req)
+          return req if new_version_satisfies?(req)
+
+          update_pyproject_version(req)
         end
 
         def update_pyproject_version(req)
@@ -175,11 +184,29 @@ module Dependabot
         end
         # rubocop:enable Metrics/PerceivedComplexity
 
-        # rubocop:disable Metrics/PerceivedComplexity
         def updated_requirement(req)
           return req unless latest_resolvable_version
           return req unless req.fetch(:requirement)
 
+          case update_strategy
+          when :widen_ranges
+            widen_requirement(req)
+          when :bump_versions
+            update_requirement(req)
+          when :bump_versions_if_necessary
+            update_requirement_if_needed(req)
+          else
+            raise "Unexpected update strategy: #{update_strategy}"
+          end
+        end
+
+        def update_requirement_if_needed(req)
+          return req if new_version_satisfies?(req)
+
+          update_requirement(req)
+        end
+
+        def update_requirement(req)
           requirement_strings = req[:requirement].split(",").map(&:strip)
 
           new_requirement =
@@ -197,7 +224,14 @@ module Dependabot
         rescue UnfixableRequirement
           req.merge(requirement: :unfixable)
         end
-        # rubocop:enable Metrics/PerceivedComplexity
+
+        def widen_requirement(req)
+          return req if new_version_satisfies?(req)
+
+          new_requirement = widen_requirement_range(req[:requirement])
+
+          req.merge(requirement: new_requirement)
+        end
 
         def new_version_satisfies?(req)
           requirement_class.
@@ -243,8 +277,10 @@ module Dependabot
             next r.to_s if r.satisfied_by?(latest_resolvable_version)
 
             case op = r.requirements.first.first
-            when "<", "<="
-              "<" + update_greatest_version(r.to_s, latest_resolvable_version)
+            when "<"
+              "<" + update_greatest_version(r.requirements.first.last, latest_resolvable_version)
+            when "<="
+              "<=" + latest_resolvable_version.to_s
             when "!=", ">", ">="
               raise UnfixableRequirement
             else
@@ -316,14 +352,12 @@ module Dependabot
           end
         end
 
-        # Updates the version in a "<" or "<=" constraint to allow the given
-        # version
-        def update_greatest_version(req_string, version_to_be_permitted)
+        # Updates the version in a "<" constraint to allow the given version
+        def update_greatest_version(version, version_to_be_permitted)
           if version_to_be_permitted.is_a?(String)
             version_to_be_permitted =
               Python::Version.new(version_to_be_permitted)
           end
-          version = Python::Version.new(req_string.gsub(/<=?/, ""))
           version = version.release if version.prerelease?
 
           index_to_update = [

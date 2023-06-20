@@ -122,6 +122,75 @@ RSpec.describe Dependabot::Terraform::FileUpdater do
       end
     end
 
+    context "with private modules with different versions" do
+      let(:project_name) { "private_modules_with_different_versions" }
+
+      let(:dependencies) do
+        [
+          Dependabot::Dependency.new(
+            name: "example-org-5d3190/s3-webapp/aws",
+            version: "0.11.0",
+            previous_version: "0.9.1",
+            requirements: [{
+              requirement: "0.11.0",
+              groups: [],
+              file: "main.tf",
+              source: {
+                type: "registry",
+                registry_hostname: "app.terraform.io",
+                module_identifier: "example-org-5d3190/s3-webapp/aws"
+              }
+            }, {
+              requirement: "0.11.0",
+              groups: [],
+              file: "main.tf",
+              source: {
+                type: "registry",
+                registry_hostname: "app.terraform.io",
+                module_identifier: "example-org-5d3190/s3-webapp/aws"
+              }
+            }],
+            previous_requirements: [{
+              requirement: "0.9.1",
+              groups: [],
+              file: "main.tf",
+              source: {
+                type: "registry",
+                registry_hostname: "app.terraform.io",
+                module_identifier: "example-org-5d3190/s3-webapp/aws"
+              }
+            }, {
+              requirement: "0.11.0",
+              groups: [],
+              file: "main.tf",
+              source: {
+                type: "registry",
+                registry_hostname: "app.terraform.io",
+                module_identifier: "example-org-5d3190/s3-webapp/aws"
+              }
+            }],
+            package_manager: "terraform"
+          )
+        ]
+      end
+
+      it "updates all private modules versions" do
+        updated_file = subject.find { |file| file.name == "main.tf" }
+
+        expect(updated_file.content).to include(<<~HCL)
+          module "s3-webapp-first" {
+            source  = "app.terraform.io/example-org-5d3190/s3-webapp/aws"
+            version = "0.11.0"
+          }
+
+          module "s3-webapp-second" {
+            source  = "app.terraform.io/example-org-5d3190/s3-webapp/aws"
+            version = "0.11.0"
+          }
+        HCL
+      end
+    end
+
     context "with a private provider" do
       let(:project_name) { "private_provider" }
 
@@ -1513,6 +1582,45 @@ RSpec.describe Dependabot::Terraform::FileUpdater do
               version     = "0.0.10"
           DEP
         )
+      end
+    end
+
+    describe "when provider version preceeds its source" do
+      let(:project_name) { "provider_version_preceed" }
+      let(:dependencies) do
+        [
+          Dependabot::Dependency.new(
+            name: "hashicorp/azurerm",
+            version: "3.40.0",
+            previous_version: "3.30.0",
+            requirements: [{
+              requirement: "3.40.0",
+              groups: [],
+              file: "providers.tf",
+              source: {
+                type: "provider",
+                registry_hostname: "registry.terraform.io",
+                module_identifier: "hashicorp/azurerm"
+              }
+            }],
+            previous_requirements: [{
+              requirement: "3.31.0",
+              groups: [],
+              file: "providers.tf",
+              source: {
+                type: "provider",
+                registry_hostname: "registry.terraform.io",
+                module_identifier: "hashicorp/azurerm"
+              }
+            }],
+            package_manager: "terraform"
+          )
+        ]
+      end
+
+      it "parses correctly and updates the module version" do
+        updated_file = subject.find { |file| file.name == "providers.tf" }
+        expect(updated_file.content).to include("version = \"3.40.0\"")
       end
     end
 

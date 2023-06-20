@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "byebug"
 require "dependabot/logger"
 require "dependabot/python"
 require "dependabot/terraform"
@@ -21,8 +20,9 @@ require "dependabot/pub"
 require "logger"
 require "vcr"
 require "webmock/rspec"
+require "yaml"
 
-# TODO: Stop rescuing StandardError in Dependabot::BaseJob#run
+# TODO: Stop rescuing StandardError in Dependabot::BaseCommand#run
 #
 # For now we log errors as these can surface exceptions that currently get rescued
 # in integration tests.
@@ -53,6 +53,12 @@ RSpec.configure do |config|
 
   def fixture(path)
     File.read(File.join("spec", "fixtures", path))
+  end
+
+  def job_definition_fixture(path)
+    YAML.load(
+      fixture(File.join("job_definitions", "#{path}.yaml"))
+    )
   end
 end
 

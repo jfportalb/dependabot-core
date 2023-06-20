@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "active_support/notifications"
 require "digest"
 require "English"
 require "excon"
@@ -10,9 +9,10 @@ require "open3"
 require "shellwords"
 require "tmpdir"
 
+require "dependabot/simple_instrumentor"
 require "dependabot/utils"
 require "dependabot/errors"
-require "dependabot/version"
+require "dependabot"
 
 module Dependabot
   module SharedHelpers
@@ -59,12 +59,12 @@ module Dependabot
         super(message)
         @error_class = error_class || ""
         @error_context = error_context
-        @command = error_context[:command]
+        @fingerprint = error_context[:fingerprint] || error_context[:command]
         @trace = trace
       end
 
       def raven_context
-        { fingerprint: [@command], extra: @error_context }
+        { fingerprint: [@fingerprint], extra: @error_context.except(:stderr_output, :fingerprint) }
       end
     end
 
@@ -97,6 +97,7 @@ module Dependabot
 
       if ENV["DEBUG_HELPERS"] == "true"
         puts env_cmd
+        puts function
         puts stdout
         puts stderr
       end
@@ -116,6 +117,8 @@ module Dependabot
         process_termsig: process.termsig
       }
 
+      check_out_of_memory_error(stderr, error_context)
+
       response = JSON.parse(stdout)
       return response["result"] if process.success?
 
@@ -134,6 +137,16 @@ module Dependabot
     end
     # rubocop:enable Metrics/MethodLength
 
+    def self.check_out_of_memory_error(stderr, error_context)
+      return unless stderr&.include?("JavaScript heap out of memory")
+
+      raise HelperSubprocessFailed.new(
+        message: "JavaScript heap out of memory",
+        error_class: "Dependabot::OutOfMemoryError",
+        error_context: error_context
+      )
+    end
+
     def self.excon_middleware
       Excon.defaults[:middlewares] +
         [Excon::Middleware::Decompress] +
@@ -151,7 +164,7 @@ module Dependabot
       options ||= {}
       headers = options.delete(:headers)
       {
-        instrumentor: ActiveSupport::Notifications,
+        instrumentor: Dependabot::SimpleInstrumentor,
         connect_timeout: 5,
         write_timeout: 5,
         read_timeout: 20,
@@ -190,7 +203,8 @@ module Dependabot
       run_shell_command(
         "git config --global credential.helper " \
         "'!#{credential_helper_path} --file #{Dir.pwd}/git.store'",
-        allow_unsafe_shell_command: true
+        allow_unsafe_shell_command: true,
+        fingerprint: "git config --global credential.helper '<helper_command>'"
       )
 
       # see https://github.blog/2022-04-12-git-security-vulnerability-announced/
@@ -295,7 +309,7 @@ module Dependabot
       FileUtils.mv(backup_path, GIT_CONFIG_GLOBAL_PATH)
     end
 
-    def self.run_shell_command(command, allow_unsafe_shell_command: false, env: {})
+    def self.run_shell_command(command, allow_unsafe_shell_command: false, env: {}, fingerprint: nil)
       start = Time.now
       cmd = allow_unsafe_shell_command ? command : escape_command(command)
       stdout, process = Open3.capture2e(env || {}, cmd)
@@ -307,6 +321,7 @@ module Dependabot
 
       error_context = {
         command: cmd,
+        fingerprint: fingerprint,
         time_taken: time_taken,
         process_exit_value: process.to_s
       }

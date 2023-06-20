@@ -5,38 +5,38 @@ module Dependabot
     GITHUB_SOURCE = %r{
       (?<provider>github)
       (?:\.com)[/:]
-      (?<repo>[\w.-]+/(?:(?!\.git|\.\s)[\w.-])+)
+      (?<repo>[\w.-]+/(?:[\w.-])+)
       (?:(?:/tree|/blob)/(?<branch>[^/]+)/(?<directory>.*)[\#|/])?
-    }x.freeze
+    }x
 
     GITHUB_ENTERPRISE_SOURCE = %r{
       (?<protocol>(http://|https://|git://|ssh://))*
       (?<username>[^@]+@)*
       (?<host>[^/]+)
       [/:]
-      (?<repo>[\w.-]+/(?:(?!\.git|\.\s)[\w.-])+)
+      (?<repo>[\w.-]+/(?:[\w.-])+)
       (?:(?:/tree|/blob)/(?<branch>[^/]+)/(?<directory>.*)[\#|/])?
-    }x.freeze
+    }x
 
     GITLAB_SOURCE = %r{
       (?<provider>gitlab)
       (?:\.com)[/:]
-      (?<repo>(?!\.git|/tree|/blob)[\w./-]+?)(?:\.git)?
-      (?:(?:/tree|/blob)/(?<branch>[^/]+)/(?<directory>.*)[\#|/].*)?$
-    }x.freeze
+      (?<repo>[^/]+/(?:[^/])+((?!/tree|/blob/|/-)/[^/]+)?)
+      (?:(?:/tree|/blob)/(?<branch>[^/]+)/(?<directory>.*)[\#|/].*)?
+    }x
 
     BITBUCKET_SOURCE = %r{
       (?<provider>bitbucket)
       (?:\.org)[/:]
-      (?<repo>[\w.-]+/(?:(?!\.git|\.\s)[\w.-])+)
+      (?<repo>[\w.-]+/(?:[\w.-])+)
       (?:(?:/src)/(?<branch>[^/]+)/(?<directory>.*)[\#|/])?
-    }x.freeze
+    }x
 
     AZURE_SOURCE = %r{
       (?<provider>azure)
       (?:\.com)[/:]
-      (?<repo>[\w.-]+/([\w.-]+/)?(?:_git/)(?:(?!\.git|\.\s)[\w.-])+)
-    }x.freeze
+      (?<repo>[\w.-]+/([\w.-]+/)?(?:_git/)(?:[\w.-])+)
+    }x
 
     CODECOMMIT_SOURCE = %r{
       (?<protocol>(http://|https://|git://|ssh://))
@@ -48,7 +48,7 @@ module Dependabot
       (?:/)?(?<directory>[^?]*)?
       [?]?
       (?<ref>.*)?
-    }x.freeze
+    }x
 
     SOURCE_REGEX = /
       (?:#{GITHUB_SOURCE})|
@@ -56,7 +56,7 @@ module Dependabot
       (?:#{BITBUCKET_SOURCE})|
       (?:#{AZURE_SOURCE})|
       (?:#{CODECOMMIT_SOURCE})
-    /x.freeze
+    /x
 
     IGNORED_PROVIDER_HOSTS = %w(gitbox.apache.org svn.apache.org fuchsia.googlesource.com).freeze
 
@@ -70,7 +70,7 @@ module Dependabot
 
       new(
         provider: captures.fetch("provider"),
-        repo: captures.fetch("repo"),
+        repo: captures.fetch("repo").delete_suffix(".git").delete_suffix("."),
         directory: captures.fetch("directory"),
         branch: captures.fetch("branch")
       )
@@ -87,7 +87,7 @@ module Dependabot
 
       new(
         provider: "github",
-        repo: captures.fetch("repo"),
+        repo: captures.fetch("repo").delete_suffix(".git").delete_suffix("."),
         directory: captures.fetch("directory"),
         branch: captures.fetch("branch"),
         hostname: captures.fetch("host"),

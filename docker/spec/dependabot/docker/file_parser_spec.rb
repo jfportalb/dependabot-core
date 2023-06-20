@@ -101,6 +101,54 @@ RSpec.describe Dependabot::Docker::FileParser do
       end
     end
 
+    context "with a namespace with digest" do
+      let(:dockerfile_fixture_name) { "namespace_digest" }
+      let(:registry_tags) { fixture("docker", "registry_tags", "ubuntu_namespace.json") }
+      let(:repo_url) { "https://registry.hub.docker.com/v2/my-fork/ubuntu/" }
+      let(:digest_headers) do
+        JSON.parse(
+          fixture("docker", "registry_manifest_headers", "ubuntu_12.04.5.json")
+        )
+      end
+
+      before do
+        stub_request(:head, repo_url + "manifests/10.04").
+          and_return(status: 404)
+
+        stub_request(:head, repo_url + "manifests/12.04.5").
+          and_return(status: 200, body: "", headers: digest_headers)
+      end
+
+      before do
+        auth_url = "https://auth.docker.io/token?service=registry.docker.io"
+        stub_request(:get, auth_url).
+          and_return(status: 200, body: { token: "token" }.to_json)
+
+        tags_url = repo_url + "tags/list"
+        stub_request(:get, tags_url).
+          and_return(status: 200, body: registry_tags)
+      end
+
+      describe "the first dependency" do
+        subject(:dependency) { dependencies.first }
+        let(:expected_requirements) do
+          [{
+            requirement: nil,
+            groups: [],
+            file: "Dockerfile",
+            source: { digest: "18305429afa14ea462f810146ba44d4363ae76e4c8dfc38288cf73aa07485005" }
+          }]
+        end
+
+        it "has the right details" do
+          expect(dependency).to be_a(Dependabot::Dependency)
+          expect(dependency.name).to eq("my-fork/ubuntu")
+          expect(dependency.version).to eq("18305429afa14ea462f810146ba44d4363ae76e4c8dfc38288cf73aa07485005")
+          expect(dependency.requirements).to eq(expected_requirements)
+        end
+      end
+    end
+
     context "with a FROM line written by a nutcase" do
       let(:dockerfile_fixture_name) { "case" }
 
@@ -180,7 +228,7 @@ RSpec.describe Dependabot::Docker::FileParser do
             and_return(status: 200, body: "", headers: digest_headers)
         end
 
-        its(:length) { is_expected.to eq(0) }
+        its(:length) { is_expected.to eq(1) }
       end
 
       context "that matches a tag" do
@@ -202,7 +250,7 @@ RSpec.describe Dependabot::Docker::FileParser do
               groups: [],
               file: "Dockerfile",
               source: {
-                digest: "sha256:18305429afa14ea462f810146ba44d4363ae76e4c8d" \
+                digest: "18305429afa14ea462f810146ba44d4363ae76e4c8d" \
                         "fc38288cf73aa07485005"
               }
             }]
@@ -211,36 +259,30 @@ RSpec.describe Dependabot::Docker::FileParser do
           it "has the right details" do
             expect(dependency).to be_a(Dependabot::Dependency)
             expect(dependency.name).to eq("ubuntu")
-            expect(dependency.version).to eq("12.04.5")
+            expect(dependency.version).to eq("18305429afa14ea462f810146ba44d4363ae76e4c8dfc38288cf73aa07485005")
             expect(dependency.requirements).to eq(expected_requirements)
           end
         end
 
-        context "for a private registry" do
-          let(:dockerfile_fixture_name) { "private_digest" }
-          let(:repo_url) { "https://registry-host.io:5000/v2/myreg/ubuntu/" }
+        context "with replaces-base" do
+          let(:dockerfile_fixture_name) { "digest" }
+          let(:repo_url) { "https://registry-host.io:5000/v2/ubuntu/" }
 
-          context "without no/bad authentication credentials" do
-            before do
-              tags_url = repo_url + "tags/list"
-              stub_request(:get, tags_url).
-                and_return(
-                  status: 401,
-                  body: "",
-                  headers: { "www_authenticate" => "basic 123" }
-                )
-            end
-
-            it "raises a PrivateSourceAuthenticationFailure error" do
-              error_class = Dependabot::PrivateSourceAuthenticationFailure
-              expect { parser.parse }.
-                to raise_error(error_class) do |error|
-                  expect(error.source).to eq("registry-host.io:5000")
-                end
-            end
+          before do
+            tags_url = repo_url + "tags/list"
+            stub_request(:get, tags_url).
+              and_return(status: 200, body: registry_tags)
           end
 
-          context "with good authentication credentials" do
+          context "when replaces-base is false" do
+            let(:repo_url) { "https://registry.hub.docker.com/v2/library/ubuntu/" }
+            let(:credentials) do
+              [{
+                "type" => "docker_registry",
+                "registry" => "registry-host.io:5000",
+                "replaces-base" => false
+              }]
+            end
             let(:parser) do
               described_class.new(
                 dependency_files: files,
@@ -248,13 +290,13 @@ RSpec.describe Dependabot::Docker::FileParser do
                 source: source
               )
             end
-            let(:credentials) do
-              [{
-                "type" => "docker_registry",
-                "registry" => "registry-host.io:5000",
-                "username" => "grey",
-                "password" => "pa55word"
-              }]
+
+            before do
+              stub_request(:head, repo_url + "manifests/10.04").
+                and_return(status: 404)
+
+              stub_request(:head, repo_url + "manifests/12.04.5").
+                and_return(status: 200, body: "", headers: digest_headers)
             end
 
             its(:length) { is_expected.to eq(1) }
@@ -267,136 +309,18 @@ RSpec.describe Dependabot::Docker::FileParser do
                   groups: [],
                   file: "Dockerfile",
                   source: {
-                    registry: "registry-host.io:5000",
-                    digest: "sha256:18305429afa14ea462f810146ba44d4363ae76" \
-                            "e4c8dfc38288cf73aa07485005"
+                    digest: "18305429afa14ea462f810146ba44d4363ae76e4c8d" \
+                            "fc38288cf73aa07485005"
                   }
                 }]
               end
 
               it "has the right details" do
                 expect(dependency).to be_a(Dependabot::Dependency)
-                expect(dependency.name).to eq("myreg/ubuntu")
-                expect(dependency.version).to eq("12.04.5")
+                expect(dependency.name).to eq("ubuntu")
+                expect(dependency.version).to eq("18305429afa14ea462f810146ba44d4363ae76e4c8d" \
+                                                 "fc38288cf73aa07485005")
                 expect(dependency.requirements).to eq(expected_requirements)
-              end
-            end
-
-            context "that don't include a username and password" do
-              let(:credentials) do
-                [{
-                  "type" => "docker_registry",
-                  "registry" => "registry-host.io:5000"
-                }]
-              end
-
-              its(:length) { is_expected.to eq(1) }
-            end
-          end
-
-          context "that uses Amazon ECR" do
-            let(:dockerfile_fixture_name) { "private_ecr_digest" }
-            let(:repo_url) do
-              "https://695729449481.dkr.ecr.eu-west-2.amazonaws.com/v2/" \
-                "docker-php/"
-            end
-
-            context "without credentials" do
-              before do
-                tags_url = repo_url + "tags/list"
-                stub_request(:get, tags_url).
-                  and_return(
-                    status: 401,
-                    body: "",
-                    headers: { "www_authenticate" => "basic 123" }
-                  )
-              end
-
-              it "raises a PrivateSourceAuthenticationFailure error" do
-                error_class = Dependabot::PrivateSourceAuthenticationFailure
-                expect { parser.parse }.
-                  to raise_error(error_class) do |error|
-                    expect(error.source).
-                      to eq("695729449481.dkr.ecr.eu-west-2.amazonaws.com")
-                  end
-              end
-            end
-
-            context "with credentials" do
-              let(:parser) do
-                described_class.new(
-                  dependency_files: files,
-                  credentials: credentials,
-                  source: source
-                )
-              end
-
-              let(:credentials) do
-                [{
-                  "type" => "docker_registry",
-                  "registry" => "695729449481.dkr.ecr.eu-west-2.amazonaws.com",
-                  "username" => "grey",
-                  "password" => "pa55word"
-                }]
-              end
-
-              context "that are invalid" do
-                before do
-                  stub_request(
-                    :post,
-                    "https://api.ecr.eu-west-2.amazonaws.com/"
-                  ).and_return(
-                    status: 403,
-                    body: fixture("docker", "ecr_responses", "invalid_token")
-                  )
-                end
-
-                it "raises a PrivateSourceAuthenticationFailure error" do
-                  error_class = Dependabot::PrivateSourceAuthenticationFailure
-                  expect { parser.parse }.
-                    to raise_error(error_class) do |error|
-                      expect(error.source).
-                        to eq("695729449481.dkr.ecr.eu-west-2.amazonaws.com")
-                    end
-                end
-              end
-
-              context "that are valid" do
-                before do
-                  stub_request(
-                    :post,
-                    "https://api.ecr.eu-west-2.amazonaws.com/"
-                  ).and_return(
-                    status: 200,
-                    body: fixture("docker", "ecr_responses", "auth_data")
-                  )
-                end
-
-                its(:length) { is_expected.to eq(1) }
-
-                describe "the first dependency" do
-                  subject(:dependency) { dependencies.first }
-                  let(:expected_requirements) do
-                    [{
-                      requirement: nil,
-                      groups: [],
-                      file: "Dockerfile",
-                      source: {
-                        registry:
-                          "695729449481.dkr.ecr.eu-west-2.amazonaws.com",
-                        digest: "sha256:18305429afa14ea462f810146ba44d4363ae76" \
-                                "e4c8dfc38288cf73aa07485005"
-                      }
-                    }]
-                  end
-
-                  it "has the right details" do
-                    expect(dependency).to be_a(Dependabot::Dependency)
-                    expect(dependency.name).to eq("docker-php")
-                    expect(dependency.version).to eq("12.04.5")
-                    expect(dependency.requirements).to eq(expected_requirements)
-                  end
-                end
               end
             end
           end
@@ -437,7 +361,7 @@ RSpec.describe Dependabot::Docker::FileParser do
           file: "Dockerfile",
           source: {
             tag: "12.04.5",
-            digest: "sha256:18305429afa14ea462f810146ba44d4363ae76e4c8dfc38288cf73aa07485005"
+            digest: "18305429afa14ea462f810146ba44d4363ae76e4c8dfc38288cf73aa07485005"
           }
         }])
       end
@@ -810,7 +734,7 @@ RSpec.describe Dependabot::Docker::FileParser do
             and_return(status: 200, body: "", headers: digest_headers)
         end
 
-        its(:length) { is_expected.to eq(0) }
+        its(:length) { is_expected.to eq(1) }
       end
 
       context "that matches a tag" do
@@ -832,7 +756,7 @@ RSpec.describe Dependabot::Docker::FileParser do
               groups: [],
               file: "digest.yaml",
               source: {
-                digest: "sha256:18305429afa14ea462f810146ba44d4363ae76e4c8d" \
+                digest: "18305429afa14ea462f810146ba44d4363ae76e4c8d" \
                         "fc38288cf73aa07485005"
               }
             }]
@@ -841,194 +765,8 @@ RSpec.describe Dependabot::Docker::FileParser do
           it "has the right details" do
             expect(dependency).to be_a(Dependabot::Dependency)
             expect(dependency.name).to eq("ubuntu")
-            expect(dependency.version).to eq("12.04.5")
+            expect(dependency.version).to eq("18305429afa14ea462f810146ba44d4363ae76e4c8dfc38288cf73aa07485005")
             expect(dependency.requirements).to eq(expected_requirements)
-          end
-        end
-
-        context "for a private registry" do
-          let(:podfile_fixture_name) { "private_digest.yaml" }
-          let(:repo_url) { "https://registry-host.io:5000/v2/myreg/ubuntu/" }
-
-          context "without no/bad authentication credentials" do
-            before do
-              tags_url = repo_url + "tags/list"
-              stub_request(:get, tags_url).
-                and_return(
-                  status: 401,
-                  body: "",
-                  headers: { "www_authenticate" => "basic 123" }
-                )
-            end
-
-            it "raises a PrivateSourceAuthenticationFailure error" do
-              error_class = Dependabot::PrivateSourceAuthenticationFailure
-              expect { yaml_parser.parse }.
-                to raise_error(error_class) do |error|
-                  expect(error.source).to eq("registry-host.io:5000")
-                end
-            end
-          end
-
-          context "with good authentication credentials" do
-            let(:yaml_parser) do
-              described_class.new(
-                dependency_files: podfiles,
-                credentials: credentials,
-                source: source
-              )
-            end
-            let(:credentials) do
-              [{
-                "type" => "docker_registry",
-                "registry" => "registry-host.io:5000",
-                "username" => "grey",
-                "password" => "pa55word"
-              }]
-            end
-
-            its(:length) { is_expected.to eq(1) }
-
-            describe "the first dependency" do
-              subject(:dependency) { dependencies.first }
-              let(:expected_requirements) do
-                [{
-                  requirement: nil,
-                  groups: [],
-                  file: "private_digest.yaml",
-                  source: {
-                    registry: "registry-host.io:5000",
-                    digest: "sha256:18305429afa14ea462f810146ba44d4363ae76" \
-                            "e4c8dfc38288cf73aa07485005"
-                  }
-                }]
-              end
-
-              it "has the right details" do
-                expect(dependency).to be_a(Dependabot::Dependency)
-                expect(dependency.name).to eq("myreg/ubuntu")
-                expect(dependency.version).to eq("12.04.5")
-                expect(dependency.requirements).to eq(expected_requirements)
-              end
-            end
-
-            context "that don't include a username and password" do
-              let(:credentials) do
-                [{
-                  "type" => "docker_registry",
-                  "registry" => "registry-host.io:5000"
-                }]
-              end
-
-              its(:length) { is_expected.to eq(1) }
-            end
-          end
-
-          context "that uses Amazon ECR" do
-            let(:podfile_fixture_name) { "private_ecr_digest.yaml" }
-            let(:repo_url) do
-              "https://695729449481.dkr.ecr.eu-west-2.amazonaws.com/v2/" \
-                "docker-php/"
-            end
-
-            context "without credentials" do
-              before do
-                tags_url = repo_url + "tags/list"
-                stub_request(:get, tags_url).
-                  and_return(
-                    status: 401,
-                    body: "",
-                    headers: { "www_authenticate" => "basic 123" }
-                  )
-              end
-
-              it "raises a PrivateSourceAuthenticationFailure error" do
-                error_class = Dependabot::PrivateSourceAuthenticationFailure
-                expect { yaml_parser.parse }.
-                  to raise_error(error_class) do |error|
-                    expect(error.source).
-                      to eq("695729449481.dkr.ecr.eu-west-2.amazonaws.com")
-                  end
-              end
-            end
-
-            context "with credentials" do
-              let(:yaml_parser) do
-                described_class.new(
-                  dependency_files: podfiles,
-                  credentials: credentials,
-                  source: source
-                )
-              end
-
-              let(:credentials) do
-                [{
-                  "type" => "docker_registry",
-                  "registry" => "695729449481.dkr.ecr.eu-west-2.amazonaws.com",
-                  "username" => "grey",
-                  "password" => "pa55word"
-                }]
-              end
-
-              context "that are invalid" do
-                before do
-                  stub_request(
-                    :post,
-                    "https://api.ecr.eu-west-2.amazonaws.com/"
-                  ).and_return(
-                    status: 403,
-                    body: fixture("docker", "ecr_responses", "invalid_token")
-                  )
-                end
-
-                it "raises a PrivateSourceAuthenticationFailure error" do
-                  error_class = Dependabot::PrivateSourceAuthenticationFailure
-                  expect { yaml_parser.parse }.
-                    to raise_error(error_class) do |error|
-                      expect(error.source).
-                        to eq("695729449481.dkr.ecr.eu-west-2.amazonaws.com")
-                    end
-                end
-              end
-
-              context "that are valid" do
-                before do
-                  stub_request(
-                    :post,
-                    "https://api.ecr.eu-west-2.amazonaws.com/"
-                  ).and_return(
-                    status: 200,
-                    body: fixture("docker", "ecr_responses", "auth_data")
-                  )
-                end
-
-                its(:length) { is_expected.to eq(1) }
-
-                describe "the first dependency" do
-                  subject(:dependency) { dependencies.first }
-                  let(:expected_requirements) do
-                    [{
-                      requirement: nil,
-                      groups: [],
-                      file: "private_ecr_digest.yaml",
-                      source: {
-                        registry:
-                          "695729449481.dkr.ecr.eu-west-2.amazonaws.com",
-                        digest: "sha256:18305429afa14ea462f810146ba44d4363ae76" \
-                                "e4c8dfc38288cf73aa07485005"
-                      }
-                    }]
-                  end
-
-                  it "has the right details" do
-                    expect(dependency).to be_a(Dependabot::Dependency)
-                    expect(dependency.name).to eq("docker-php")
-                    expect(dependency.version).to eq("12.04.5")
-                    expect(dependency.requirements).to eq(expected_requirements)
-                  end
-                end
-              end
-            end
           end
         end
       end
@@ -1067,7 +805,7 @@ RSpec.describe Dependabot::Docker::FileParser do
           file: "digest_and_tag.yaml",
           source: {
             tag: "12.04.5",
-            digest: "sha256:18305429afa14ea462f810146ba44d4363ae76e4c8dfc38288cf73aa07485005"
+            digest: "18305429afa14ea462f810146ba44d4363ae76e4c8dfc38288cf73aa07485005"
           }
         }])
       end
@@ -1313,6 +1051,113 @@ RSpec.describe Dependabot::Docker::FileParser do
           expect(dependency).to be_a(Dependabot::Dependency)
           expect(dependency.name).to eq("my-repo/nginx")
           expect(dependency.version).to eq("1.14.2")
+          expect(dependency.requirements).to eq(expected_requirements)
+        end
+      end
+    end
+  end
+
+  let(:helmfiles) { [helmfile] }
+  let(:helmfile) do
+    Dependabot::DependencyFile.new(name: helmfile_fixture_name, content: helmfile_body)
+  end
+  let(:helmfile_body) do
+    fixture("helm", "yaml", helmfile_fixture_name)
+  end
+  let(:helmfile_fixture_name) { "values.yaml" }
+  let(:helm_parser) { described_class.new(dependency_files: helmfiles, source: source) }
+
+  describe "YAML parse" do
+    subject(:dependencies) { helm_parser.parse }
+
+    its(:length) { is_expected.to eq(1) }
+
+    describe "the first dependency" do
+      subject(:dependency) { dependencies.first }
+      let(:expected_requirements) do
+        [{
+          requirement: nil,
+          groups: [],
+          file: "values.yaml",
+          source: { registry: "registry.example.com", tag: "1.14.2" }
+        }]
+      end
+
+      it "has the right details" do
+        expect(dependency).to be_a(Dependabot::Dependency)
+        expect(dependency.name).to eq("nginx")
+        expect(dependency.version).to eq("1.14.2")
+        expect(dependency.requirements).to eq(expected_requirements)
+      end
+    end
+
+    context "with no image" do
+      let(:helmfile_fixture_name) { "empty.yaml" }
+      its(:length) { is_expected.to eq(0) }
+    end
+
+    context "with no registry" do
+      let(:helmfile_fixture_name) { "no-registry.yaml" }
+      its(:length) { is_expected.to eq(1) }
+
+      describe "the first dependency" do
+        subject(:dependency) { dependencies.first }
+        let(:expected_requirements) do
+          [{
+            requirement: nil,
+            groups: [],
+            file: "no-registry.yaml",
+            source: { registry: "mcr.microsoft.com", tag: "v1.2.3" }
+          }]
+        end
+
+        it "has the right details" do
+          expect(dependency).to be_a(Dependabot::Dependency)
+          expect(dependency.name).to eq("sql/sql")
+          expect(dependency.version).to eq("v1.2.3")
+          expect(dependency.requirements).to eq(expected_requirements)
+        end
+      end
+    end
+
+    context "with multiple images" do
+      let(:helmfile_fixture_name) { "multi-image.yaml" }
+      its(:length) { is_expected.to eq(2) }
+
+      describe "the first dependency" do
+        subject(:dependency) { dependencies.first }
+        let(:expected_requirements) do
+          [{
+            requirement: nil,
+            groups: [],
+            file: "multi-image.yaml",
+            source: { registry: "burns.azurecr.io", tag: "1.14.2" }
+          }]
+        end
+
+        it "has the right details" do
+          expect(dependency).to be_a(Dependabot::Dependency)
+          expect(dependency.name).to eq("nginx")
+          expect(dependency.version).to eq("1.14.2")
+          expect(dependency.requirements).to eq(expected_requirements)
+        end
+      end
+
+      describe "the second dependency" do
+        subject(:dependency) { dependencies.last }
+        let(:expected_requirements) do
+          [{
+            requirement: nil,
+            groups: [],
+            file: "multi-image.yaml",
+            source: { tag: "18.04" }
+          }]
+        end
+
+        it "has the right details" do
+          expect(dependency).to be_a(Dependabot::Dependency)
+          expect(dependency.name).to eq("canonical/ubuntu")
+          expect(dependency.version).to eq("18.04")
           expect(dependency.requirements).to eq(expected_requirements)
         end
       end

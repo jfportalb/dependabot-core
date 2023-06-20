@@ -37,7 +37,7 @@
 # rubocop:disable Style/GlobalVars
 
 require "etc"
-unless Etc.getpwuid(Process.uid).name == "dependabot"
+unless Etc.getpwuid(Process.uid).name == "dependabot" || ENV["ALLOW_DRY_RUN_STANDALONE"] == "true"
   puts <<~INFO
     bin/dry-run.rb is only supported in a development container.
 
@@ -83,6 +83,7 @@ require "dependabot/update_checkers"
 require "dependabot/file_updaters"
 require "dependabot/pull_request_creator"
 require "dependabot/config/file_fetcher"
+require "dependabot/simple_instrumentor"
 
 require "dependabot/bundler"
 require "dependabot/cargo"
@@ -114,7 +115,6 @@ $options = {
   cache_steps: [],
   write: false,
   clone: false,
-  lockfile_only: false,
   reject_external_code: false,
   requirements_update_strategy: nil,
   commit: nil,
@@ -185,15 +185,11 @@ option_parse = OptionParser.new do |opts|
     $options[:write] = true
   end
 
-  opts.on("--lockfile-only", "Only update the lockfile") do |_value|
-    $options[:lockfile_only] = true
-  end
-
   opts.on("--reject-external-code", "Reject external code") do |_value|
     $options[:reject_external_code] = true
   end
 
-  opts_req_desc = "Options: auto, widen_ranges, bump_versions or " \
+  opts_req_desc = "Options: lockfile_only, auto, widen_ranges, bump_versions or " \
                   "bump_versions_if_necessary"
   opts.on("--requirements-update-strategy STRATEGY", opts_req_desc) do |value|
     value = nil if value == "auto"
@@ -224,6 +220,10 @@ option_parse = OptionParser.new do |opts|
         [o.strip.downcase.to_sym, true]
       end
     end
+
+    $options[:updater_options].each do |name, val|
+      Dependabot::Experiments.register(name, val)
+    end
   end
 
   opts.on("--security-updates-only",
@@ -237,7 +237,7 @@ option_parse = OptionParser.new do |opts|
   end
 
   opts.on("--pull-request",
-          "Output pull request information: title, description") do
+          "Output pull request information metadata: title, description") do
     $options[:pull_request] = true
   end
 end
@@ -269,12 +269,16 @@ def show_diff(original_file, updated_file)
   updated_tmp_file.write(updated_file.content)
   updated_tmp_file.close
 
-  diff = `diff #{original_tmp_file.path} #{updated_tmp_file.path}`
+  diff = `diff -u #{original_tmp_file.path} #{updated_tmp_file.path}`.lines
+  added_lines = diff.count { |line| line.start_with?("+") }
+  removed_lines = diff.count { |line| line.start_with?("-") }
+
   puts
   puts "    ± #{original_file.name}"
   puts "    ~~~"
-  puts diff.lines.map { |line| "    " + line }.join
+  puts diff.map { |line| "    " + line }.join
   puts "    ~~~"
+  puts "    #{added_lines} insertions (+), #{removed_lines} deletions (-)"
 end
 
 def cached_read(name)
@@ -459,18 +463,29 @@ def handle_dependabot_error(error:, dependency:)
 end
 # rubocop:enable Metrics/MethodLength
 
+def log_conflicting_dependencies(conflicting_dependencies)
+  return unless conflicting_dependencies.any?
+
+  puts " => The update is not possible because of the following conflicting " \
+       "dependencies:"
+
+  conflicting_dependencies.each do |conflicting_dep|
+    puts "   #{conflicting_dep['explanation']}"
+  end
+end
+
 StackProf.start(raw: true) if $options[:profile]
 
 $network_trace_count = 0
-ActiveSupport::Notifications.subscribe(/excon.request/) do |*args|
-  $network_trace_count += 1
-  payload = args.last
-  puts "🌍 #{payload[:scheme]}//#{payload[:host]}:#{payload[:port]}#{payload[:path]}"
-end
+Dependabot::SimpleInstrumentor.subscribe do |*args|
+  name = args.first
+  $network_trace_count += 1 if name == "excon.request"
 
-$package_manager_version_log = []
-Dependabot.subscribe(Dependabot::Notifications::FILE_PARSER_PACKAGE_MANAGER_VERSION_PARSED) do |*args|
-  $package_manager_version_log << args.last
+  payload = args.last
+  if name == "excon.request" || name == "excon.response"
+    puts "🌍 #{name == 'excon.response' ? "<-- #{payload[:status]}" : "--> #{payload[:method].upcase}"}" \
+         " #{Excon::Utils.request_uri(payload)}"
+  end
 end
 
 $source = Dependabot::Source.new(
@@ -613,17 +628,6 @@ def peer_dependency_should_update_instead?(dependency_name, updated_deps)
 end
 
 def file_updater_for(dependencies)
-  if dependencies.count == 1
-    updated_dependency = dependencies.first
-    prev_v = updated_dependency.previous_version
-    prev_v_msg = prev_v ? "from #{prev_v} " : ""
-    puts " => updating #{updated_dependency.name} #{prev_v_msg}to " \
-         "#{updated_dependency.version}"
-  else
-    dependency_names = dependencies.map(&:name)
-    puts " => updating #{dependency_names.join(', ')}"
-  end
-
   Dependabot::FileUpdaters.for_package_manager($package_manager).new(
     dependencies: dependencies,
     dependency_files: $files,
@@ -673,6 +677,11 @@ dependencies.each do |dep|
     end
   end
 
+  if checker.up_to_date?
+    puts "    (no update needed as it's already up-to-date)"
+    next
+  end
+
   latest_allowed_version = if checker.vulnerable?
                              checker.lowest_resolvable_security_fix_version
                            else
@@ -680,13 +689,8 @@ dependencies.each do |dep|
                            end
   puts " => latest allowed version is #{latest_allowed_version || dep.version}"
 
-  if checker.up_to_date?
-    puts "    (no update needed as it's already up-to-date)"
-    next
-  end
-
   requirements_to_unlock =
-    if $options[:lockfile_only] || !checker.requirements_unlocked_or_can_be?
+    if !checker.requirements_unlocked_or_can_be?
       if checker.can_update?(requirements_to_unlock: :none) then :none
       else
         :update_not_possible
@@ -711,16 +715,7 @@ dependencies.each do |dep|
       puts "    (no update possible 🙅‍♀️)"
     end
 
-    conflicting_dependencies = checker.conflicting_dependencies
-    if conflicting_dependencies.any?
-      puts " => The update is not possible because of the following conflicting " \
-           "dependencies:"
-
-      conflicting_dependencies.each do |conflicting_dep|
-        puts "   #{conflicting_dep['explanation']}"
-      end
-    end
-
+    log_conflicting_dependencies(checker.conflicting_dependencies)
     next
   end
 
@@ -733,24 +728,36 @@ dependencies.each do |dep|
     next
   end
 
+  if $options[:security_updates_only] &&
+     updated_deps.none? { |d| security_fix?(d) }
+    puts "    (updated version is still vulnerable 🚨)"
+    log_conflicting_dependencies(checker.conflicting_dependencies)
+    next
+  end
+
   # Removal is only supported for transitive dependencies which are removed as a
   # side effect of the parent update
   deps_to_update = updated_deps.reject(&:removed?)
   updater = file_updater_for(deps_to_update)
   updated_files = updater.updated_dependency_files
 
-  # Currently unused but used to create pull requests (from the updater)
-  updated_deps.reject do |d|
+  updated_deps = updated_deps.reject do |d|
     next false if d.name == checker.dependency.name
-    next true if d.requirements == d.previous_requirements
+    next true if d.top_level? && d.requirements == d.previous_requirements
 
     d.version == d.previous_version
   end
 
-  if $options[:security_updates_only] &&
-     updated_deps.none? { |d| security_fix?(d) }
-    puts "    (updated version is still vulnerable 🚨)"
-  end
+  msg = Dependabot::PullRequestCreator::MessageBuilder.new(
+    dependencies: updated_deps,
+    files: updated_files,
+    credentials: $options[:credentials],
+    source: $source,
+    commit_message_options: $update_config.commit_message_options.to_h,
+    github_redirection_service: Dependabot::PullRequestCreator::DEFAULT_GITHUB_REDIRECTION_SERVICE
+  ).message
+
+  puts " => #{msg.pr_name.downcase}"
 
   if $options[:write]
     updated_files.each do |updated_file|
@@ -780,14 +787,6 @@ dependencies.each do |dep|
   end
 
   if $options[:pull_request]
-    msg = Dependabot::PullRequestCreator::MessageBuilder.new(
-      dependencies: updated_deps,
-      files: updated_files,
-      credentials: $options[:credentials],
-      source: $source,
-      commit_message_options: $update_config.commit_message_options.to_h,
-      github_redirection_service: Dependabot::PullRequestCreator::DEFAULT_GITHUB_REDIRECTION_SERVICE
-    ).message
     puts "Pull Request Title: #{msg.pr_name}"
     puts "--description--\n#{msg.pr_message}\n--/description--"
     puts "--commit--\n#{msg.commit_message}\n--/commit--"
@@ -800,7 +799,8 @@ StackProf.stop if $options[:profile]
 StackProf.results("tmp/stackprof-#{Time.now.strftime('%Y-%m-%d-%H:%M')}.dump") if $options[:profile]
 
 puts "🌍 Total requests made: '#{$network_trace_count}'"
-puts "🎈 Package manager version log: #{$package_manager_version_log.join('\n')}" if $package_manager_version_log.any?
+package_manager = fetcher.package_manager_version
+puts "🎈 Package manager version log: #{package_manager}" unless package_manager.nil?
 
 # rubocop:enable Metrics/BlockLength
 

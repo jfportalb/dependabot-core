@@ -172,7 +172,8 @@ module Dependabot
 
       # rubocop:disable Metrics/ParameterLists
       def create_pull_request(pr_name, source_branch, target_branch,
-                              pr_description, labels, work_item = nil)
+                              pr_description, labels,
+                              reviewers = nil, assignees = nil, work_item = nil)
         pr_description = truncate_pr_description(pr_description)
 
         content = {
@@ -181,6 +182,7 @@ module Dependabot
           title: pr_name,
           description: pr_description,
           labels: labels.map { |label| { name: label } },
+          reviewers: pr_reviewers(reviewers, assignees),
           workItemRefs: [{ id: work_item }]
         }
 
@@ -188,6 +190,32 @@ module Dependabot
           source.organization + "/" + source.project +
           "/_apis/git/repositories/" + source.unscoped_repo +
           "/pullrequests?api-version=5.0", content.to_json)
+      end
+
+      def autocomplete_pull_request(pull_request_id, auto_complete_set_by, merge_commit_message,
+                                    delete_source_branch = true, squash_merge = true, merge_strategy = "squash",
+                                    trans_work_items = true, ignore_config_ids = [])
+
+        content = {
+          autoCompleteSetBy: {
+            id: auto_complete_set_by
+          },
+          completionOptions: {
+            mergeCommitMessage: merge_commit_message,
+            deleteSourceBranch: delete_source_branch,
+            squashMerge: squash_merge,
+            mergeStrategy: merge_strategy,
+            transitionWorkItems: trans_work_items,
+            autoCompleteIgnoreConfigIds: ignore_config_ids
+          }
+        }
+
+        response = patch(source.api_endpoint +
+                           source.organization + "/" + source.project +
+                           "/_apis/git/repositories/" + source.unscoped_repo +
+                           "/pullrequests/" + pull_request_id.to_s + "?api-version=5.1", content.to_json)
+
+        JSON.parse(response.body)
       end
 
       def pull_request(pull_request_id)
@@ -214,6 +242,18 @@ module Dependabot
         JSON.parse(response.body).fetch("value").first
       end
       # rubocop:enable Metrics/ParameterLists
+
+      def compare(previous_tag, new_tag, type)
+        response = get(source.api_endpoint +
+                         source.organization + "/" + source.project +
+                         "/_apis/git/repositories/" + source.unscoped_repo +
+                         "/commits?searchCriteria.itemVersion.versionType=#{type}" \
+                         "&searchCriteria.itemVersion.version=#{previous_tag}" \
+                         "&searchCriteria.compareVersion.versionType=#{type}" \
+                         "&searchCriteria.compareVersion.version=#{new_tag}")
+
+        JSON.parse(response.body).fetch("value")
+      end
 
       def get(url)
         response = nil
@@ -277,6 +317,37 @@ module Dependabot
         response
       end
 
+      def patch(url, json)
+        response = nil
+
+        retry_connection_failures do
+          response = Excon.patch(
+            url,
+            body: json,
+            user: credentials&.fetch("username", nil),
+            password: credentials&.fetch("password", nil),
+            idempotent: true,
+            **SharedHelpers.excon_defaults(
+              headers: auth_header.merge(
+                {
+                  "Content-Type" => "application/json"
+                }
+              )
+            )
+          )
+
+          raise InternalServerError if response.status == 500
+          raise BadGateway if response.status == 502
+          raise ServiceNotAvailable if response.status == 503
+        end
+
+        raise Unauthorized if response.status == 401
+        raise Forbidden if response.status == 403
+        raise NotFound if response.status == 404
+
+        response
+      end
+
       private
 
       def retry_connection_failures
@@ -322,6 +393,13 @@ module Dependabot
 
         message = JSON.parse(response.body).fetch("message", nil)
         message&.include?("TF401289")
+      end
+
+      def pr_reviewers(reviewers, assignees)
+        return [] unless reviewers || assignees
+
+        pr_reviewers = reviewers&.map { |r_id| { id: r_id, isRequired: true } } || []
+        pr_reviewers + (assignees&.map { |r_id| { id: r_id, isRequired: false } } || [])
       end
 
       attr_reader :auth_header

@@ -16,7 +16,8 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
       dependency_files: dependency_files,
       credentials: credentials,
       ignored_versions: ignored_versions,
-      security_advisories: security_advisories
+      security_advisories: security_advisories,
+      requirements_update_strategy: requirements_update_strategy
     )
   end
   let(:credentials) do
@@ -33,6 +34,7 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
   let(:directory) { "/" }
   let(:ignored_versions) { [] }
   let(:security_advisories) { [] }
+  let(:requirements_update_strategy) { nil }
 
   let(:dependency) do
     Dependabot::Dependency.new(
@@ -1048,7 +1050,6 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
 
         context "when the gem has a bad branch" do
           let(:dependency_files) { bundler_project_dependency_files("bad_branch") }
-          around { |example| capture_stderr { example.run } }
 
           let(:dependency_name) { "prius" }
           let(:current_version) { "2.0.0" }
@@ -1100,7 +1101,6 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
 
         context "when updating the gem results in a conflict" do
           let(:dependency_files) { bundler_project_dependency_files("git_source_with_conflict") }
-          around { |example| capture_stderr { example.run } }
 
           before do
             allow_any_instance_of(Dependabot::GitCommitChecker).
@@ -1157,7 +1157,6 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
           let(:token) do
             Base64.encode64("x-access-token:#{github_token}").delete("\n")
           end
-          around { |example| capture_stderr { example.run } }
 
           before do
             stub_request(
@@ -1168,7 +1167,7 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
               to_return(status: 401)
           end
 
-          it "raises a helpful error on bundler v1", :bundler_v1_only do
+          it "raises a helpful error" do
             expect { checker.latest_resolvable_version }.
               to raise_error do |error|
                 expect(error).to be_a(Dependabot::GitDependenciesNotReachable)
@@ -1176,39 +1175,22 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
                   to eq(["git@github.com:no-exist-sorry/prius"])
               end
           end
-
-          context "bundler v2", :bundler_v2_only do
-            let(:dependency_files) { bundler_project_dependency_files("private_git_source") }
-
-            it "updates the dependency" do
-              expect(checker.latest_resolvable_version).to eq(Gem::Version.new("3.4.1"))
-            end
-          end
         end
 
         context "that has a bad reference" do
           let(:dependency_files) { bundler_project_dependency_files("bad_ref") }
-          around { |example| capture_stderr { example.run } }
 
           before do
             stub_request(:get, "https://github.com/dependabot-fixtures/prius").
               to_return(status: 200)
           end
 
-          it "raises a helpful error", :bundler_v1_only do
+          it "raises a helpful error" do
             expect { checker.latest_resolvable_version }.
               to raise_error do |error|
                 expect(error).to be_a Dependabot::GitDependencyReferenceNotFound
                 expect(error.dependency).to eq("prius")
               end
-          end
-
-          context "bundler v2", :bundler_v2_only do
-            let(:dependency_files) { bundler_project_dependency_files("bad_ref") }
-
-            it "updates the dependency" do
-              expect(checker.latest_resolvable_version).to eq(Gem::Version.new("3.4.1"))
-            end
           end
         end
 
@@ -1329,7 +1311,6 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
         let(:token) do
           Base64.encode64("x-access-token:#{github_token}").delete("\n")
         end
-        around { |example| capture_stderr { example.run } }
 
         before do
           stub_request(
@@ -1355,7 +1336,6 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
         let(:token) do
           Base64.encode64("x-access-token:#{github_token}").delete("\n")
         end
-        around { |example| capture_stderr { example.run } }
 
         before do
           stub_request(
@@ -1381,7 +1361,6 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
         let(:token) do
           Base64.encode64("x-access-token:#{github_token}").delete("\n")
         end
-        around { |example| capture_stderr { example.run } }
 
         before do
           stub_request(
@@ -1677,83 +1656,6 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
               expect(updated_requirements.first[:source]).to_not be_nil
             end
           end
-
-          context "and the release looks like a version" do
-            let(:current_version) { "c5bf1bd47935504072ac0eba1006cf4d67af6a7a" }
-            let(:requirements) do
-              [{
-                file: "Gemfile",
-                requirement: "~> 1.0.0",
-                groups: [],
-                source: {
-                  type: "git",
-                  url: "https://github.com/dependabot-fixtures/business",
-                  branch: "master",
-                  ref: "v1.0.0"
-                }
-              }]
-            end
-
-            before do
-              git_url = "https://github.com/dependabot-fixtures/business.git"
-              git_header = {
-                "content-type" => "application/x-git-upload-pack-advertisement"
-              }
-              stub_request(
-                :get, git_url + "/info/refs?service=git-upload-pack"
-              ).to_return(
-                status: 200,
-                body: fixture("git", "upload_packs", "business"),
-                headers: git_header
-              )
-            end
-
-            it "delegates to Bundler::RequirementsUpdater" do
-              # NOTE: the v1.13.0 for the source is because we stub the lookup
-              # for the updated source
-              expect(requirements_updater).
-                to receive(:new).with(
-                  requirements: requirements,
-                  update_strategy: :bump_versions,
-                  latest_version: "1.13.0",
-                  latest_resolvable_version: "1.13.0",
-                  updated_source: {
-                    type: "git",
-                    url: "https://github.com/dependabot-fixtures/business",
-                    branch: "master",
-                    ref: "v1.13.0"
-                  }
-                ).and_call_original
-
-              expect(updated_requirements.count).to eq(1)
-              expect(updated_requirements.first[:requirement]).
-                to eq("~> 1.13.0")
-              expect(updated_requirements.first[:source]).to_not be_nil
-            end
-          end
-
-          context "and the reference is included in the new version" do
-            before do
-              allow_any_instance_of(Dependabot::GitCommitChecker).
-                to receive(:branch_or_ref_in_release?).
-                and_return(true)
-            end
-
-            it "delegates to Bundler::RequirementsUpdater" do
-              expect(requirements_updater).
-                to receive(:new).with(
-                  requirements: requirements,
-                  update_strategy: :bump_versions,
-                  latest_version: /^2./,
-                  latest_resolvable_version: /^1./,
-                  updated_source: nil
-                ).and_call_original
-
-              expect(updated_requirements.count).to eq(1)
-              expect(updated_requirements.first[:requirement]).to eq(">= 0")
-              expect(updated_requirements.first[:source]).to be_nil
-            end
-          end
         end
       end
     end
@@ -1895,6 +1797,12 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
       end
 
       it { is_expected.to eq(true) }
+
+      context "and with the lockfile-only requirements update strategy set" do
+        let(:requirements_update_strategy) { :lockfile_only }
+
+        it { is_expected.to eq(true) }
+      end
     end
 
     context "with a sub-dependency" do
@@ -1920,6 +1828,12 @@ RSpec.describe Dependabot::Bundler::UpdateChecker do
         let(:req) { "> 1.0.0, < 1.5.0" }
 
         it { is_expected.to eq(true) }
+      end
+
+      context "but with the lockfile-only requirements update strategy set" do
+        let(:requirements_update_strategy) { :lockfile_only }
+
+        it { is_expected.to eq(false) }
       end
     end
 

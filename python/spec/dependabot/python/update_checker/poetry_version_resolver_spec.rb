@@ -26,10 +26,11 @@ RSpec.describe namespace::PoetryVersionResolver do
   let(:pyproject) do
     Dependabot::DependencyFile.new(
       name: "pyproject.toml",
-      content: fixture("pyproject_files", pyproject_fixture_name)
+      content: pyproject_content
     )
   end
-  let(:pyproject_fixture_name) { "exact_version.toml" }
+  let(:pyproject_content) { fixture("pyproject_files", pyproject_fixture_name) }
+  let(:pyproject_fixture_name) { "poetry_exact_requirement.toml" }
   let(:lockfile) do
     Dependabot::DependencyFile.new(
       name: "pyproject.lock",
@@ -65,6 +66,30 @@ RSpec.describe namespace::PoetryVersionResolver do
     context "without a lockfile (but with a latest version)" do
       let(:dependency_files) { [pyproject] }
       let(:dependency_version) { nil }
+      it { is_expected.to eq(Gem::Version.new("2.18.4")) }
+    end
+
+    context "with a dependency defined under dev-dependencies" do
+      let(:pyproject_content) do
+        super().gsub(/\[tool\.poetry\.dependencies\]/, "[tool.poetry.dev-dependencies]")
+      end
+
+      it { is_expected.to eq(Gem::Version.new("2.18.4")) }
+    end
+
+    context "with a dependency defined under a group" do
+      let(:pyproject_content) do
+        super().gsub(/\[tool\.poetry\.dependencies\]/, "[tool.poetry.group.dev.dependencies]")
+      end
+
+      it { is_expected.to eq(Gem::Version.new("2.18.4")) }
+    end
+
+    context "with a dependency defined under a non-dev group" do
+      let(:pyproject_content) do
+        super().gsub(/\[tool\.poetry\.dependencies\]/, "[tool.poetry.group.docs.dependencies]")
+      end
+
       it { is_expected.to eq(Gem::Version.new("2.18.4")) }
     end
 
@@ -230,7 +255,7 @@ RSpec.describe namespace::PoetryVersionResolver do
         expect { subject }.
           to raise_error(Dependabot::DependencyFileNotResolvable) do |error|
             expect(error.message).
-              to include("depends on black (^18) which doesn't match any versions")
+              to include("depends on black (^18), version solving failed")
           end
       end
 
@@ -294,7 +319,7 @@ RSpec.describe namespace::PoetryVersionResolver do
             to raise_error(Dependabot::DependencyFileNotResolvable) do |error|
               puts error.message
               expect(error.message).
-                to include("depends on black (^18) which doesn't match any versions")
+                to include("depends on black (^18), version solving failed")
             end
         end
       end

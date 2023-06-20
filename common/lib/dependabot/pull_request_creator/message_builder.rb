@@ -3,6 +3,8 @@
 require "pathname"
 require "dependabot/clients/github_with_retries"
 require "dependabot/clients/gitlab_with_retries"
+require "dependabot/dependency_group"
+require "dependabot/logger"
 require "dependabot/metadata_finders"
 require "dependabot/pull_request_creator"
 require "dependabot/pull_request_creator/message"
@@ -20,12 +22,13 @@ module Dependabot
       attr_reader :source, :dependencies, :files, :credentials,
                   :pr_message_header, :pr_message_footer,
                   :commit_message_options, :vulnerabilities_fixed,
-                  :github_redirection_service
+                  :github_redirection_service, :dependency_group
 
       def initialize(source:, dependencies:, files:, credentials:,
                      pr_message_header: nil, pr_message_footer: nil,
                      commit_message_options: {}, vulnerabilities_fixed: {},
-                     github_redirection_service:)
+                     github_redirection_service: DEFAULT_GITHUB_REDIRECTION_SERVICE,
+                     dependency_group: nil)
         @dependencies               = dependencies
         @files                      = files
         @source                     = source
@@ -35,25 +38,32 @@ module Dependabot
         @commit_message_options     = commit_message_options
         @vulnerabilities_fixed      = vulnerabilities_fixed
         @github_redirection_service = github_redirection_service
+        @dependency_group           = dependency_group
       end
 
       def pr_name
-        pr_name = pr_name_prefixer.pr_name_prefix
-        pr_name += library? ? library_pr_name : application_pr_name
-        return pr_name if files.first.directory == "/"
-
-        pr_name + " in #{files.first.directory}"
+        name = dependency_group ? group_pr_name : solo_pr_name
+        name[0] = name[0].capitalize if pr_name_prefixer.capitalize_first_word?
+        "#{pr_name_prefix}#{name}"
       end
 
       def pr_message
-        suffixed_pr_message_header + commit_message_intro + \
+        suffixed_pr_message_header + commit_message_intro +
           metadata_cascades + prefixed_pr_message_footer
+      rescue StandardError => e
+        Dependabot.logger.error("Error while generating PR message: #{e.message}")
+        suffixed_pr_message_header + prefixed_pr_message_footer
       end
 
       def commit_message
         message = commit_subject + "\n\n"
         message += commit_message_intro
         message += metadata_links
+        message += "\n\n" + message_trailers if message_trailers
+        message
+      rescue StandardError => e
+        Dependabot.logger.error("Error while generating commit message: #{e.message}")
+        message = commit_subject
         message += "\n\n" + message_trailers if message_trailers
         message
       end
@@ -68,49 +78,70 @@ module Dependabot
 
       private
 
-      def library_pr_name
-        pr_name = "update "
-        pr_name = pr_name.capitalize if pr_name_prefixer.capitalize_first_word?
+      def solo_pr_name
+        name = library? ? library_pr_name : application_pr_name
+        "#{name}#{pr_name_directory}"
+      end
 
-        pr_name +
+      def library_pr_name
+        "update " +
           if dependencies.count == 1
             "#{dependencies.first.display_name} requirement " \
               "#{from_version_msg(old_library_requirement(dependencies.first))}" \
               "to #{new_library_requirement(dependencies.first)}"
           else
-            names = dependencies.map(&:name)
-            "requirements for #{names[0..-2].join(', ')} and #{names[-1]}"
+            names = dependencies.map(&:name).uniq
+            if names.count == 1
+              "requirements for #{names.first}"
+            else
+              "requirements for #{names[0..-2].join(', ')} and #{names[-1]}"
+            end
           end
       end
 
       def application_pr_name
-        pr_name = "bump "
-        pr_name = pr_name.capitalize if pr_name_prefixer.capitalize_first_word?
-
-        pr_name +
+        "bump " +
           if dependencies.count == 1
             dependency = dependencies.first
             "#{dependency.display_name} " \
-              "#{from_version_msg(previous_version(dependency))}" \
-              "to #{new_version(dependency)}"
+              "#{from_version_msg(dependency.humanized_previous_version)}" \
+              "to #{dependency.humanized_version}"
           elsif updating_a_property?
             dependency = dependencies.first
             "#{property_name} " \
-              "#{from_version_msg(previous_version(dependency))}" \
-              "to #{new_version(dependency)}"
+              "#{from_version_msg(dependency.humanized_previous_version)}" \
+              "to #{dependency.humanized_version}"
           elsif updating_a_dependency_set?
             dependency = dependencies.first
             "#{dependency_set.fetch(:group)} dependency set " \
-              "#{from_version_msg(previous_version(dependency))}" \
-              "to #{new_version(dependency)}"
+              "#{from_version_msg(dependency.humanized_previous_version)}" \
+              "to #{dependency.humanized_version}"
           else
-            names = dependencies.map(&:name)
-            "#{names[0..-2].join(', ')} and #{names[-1]}"
+            names = dependencies.map(&:name).uniq
+            if names.count == 1
+              names.first
+            else
+              "#{names[0..-2].join(', ')} and #{names[-1]}"
+            end
           end
+      end
+
+      def group_pr_name
+        updates = dependencies.map(&:name).uniq.count
+        "bump the #{dependency_group.name} group#{pr_name_directory} with #{updates} update#{'s' if updates > 1}"
       end
 
       def pr_name_prefix
         pr_name_prefixer.pr_name_prefix
+      rescue StandardError => e
+        Dependabot.logger.error("Error while generating PR name: #{e.message}")
+        ""
+      end
+
+      def pr_name_directory
+        return "" if files.first.directory == "/"
+
+        " in #{files.first.directory}"
       end
 
       def commit_subject
@@ -191,18 +222,27 @@ module Dependabot
         msg + "to permit the latest version."
       end
 
+      # rubocop:disable Metrics/CyclomaticComplexity
       # rubocop:disable Metrics/PerceivedComplexity
+      # rubocop:disable Metrics/AbcSize
       def version_commit_message_intro
+        return group_intro if dependency_group
+
         return multidependency_property_intro if dependencies.count > 1 && updating_a_property?
 
         return dependency_set_intro if dependencies.count > 1 && updating_a_dependency_set?
+
+        return transitive_removed_dependency_intro if dependencies.count > 1 && removing_a_transitive_dependency?
+
+        return transitive_multidependency_intro if dependencies.count > 1 &&
+                                                   updating_top_level_and_transitive_dependencies?
 
         return multidependency_intro if dependencies.count > 1
 
         dependency = dependencies.first
         msg = "Bumps #{dependency_links.first} " \
-              "#{from_version_msg(previous_version(dependency))}" \
-              "to #{new_version(dependency)}."
+              "#{from_version_msg(dependency.humanized_previous_version)}" \
+              "to #{dependency.humanized_version}."
 
         msg += " This release includes the previously tagged commit." if switching_from_ref_to_release?(dependency)
 
@@ -214,29 +254,76 @@ module Dependabot
 
         msg
       end
-
+      # rubocop:enable Metrics/CyclomaticComplexity
       # rubocop:enable Metrics/PerceivedComplexity
+      # rubocop:enable Metrics/AbcSize
 
       def multidependency_property_intro
         dependency = dependencies.first
 
         "Bumps `#{property_name}` " \
-          "#{from_version_msg(previous_version(dependency))}" \
-          "to #{new_version(dependency)}."
+          "#{from_version_msg(dependency.humanized_previous_version)}" \
+          "to #{dependency.humanized_version}."
       end
 
       def dependency_set_intro
         dependency = dependencies.first
 
         "Bumps `#{dependency_set.fetch(:group)}` " \
-          "dependency set #{from_version_msg(previous_version(dependency))}" \
-          "to #{new_version(dependency)}."
+          "dependency set #{from_version_msg(dependency.humanized_previous_version)}" \
+          "to #{dependency.humanized_version}."
       end
 
       def multidependency_intro
         "Bumps #{dependency_links[0..-2].join(', ')} " \
           "and #{dependency_links[-1]}. These " \
           "dependencies needed to be updated together."
+      end
+
+      def transitive_multidependency_intro
+        dependency = dependencies.first
+
+        msg = "Bumps #{dependency_links[0]} to #{dependency.humanized_version}"
+
+        msg += if dependencies.count > 2
+                 " and updates ancestor dependencies #{dependency_links[0..-2].join(', ')} " \
+                   "and #{dependency_links[-1]}. "
+               else
+                 " and updates ancestor dependency #{dependency_links[1]}. "
+               end
+
+        msg += "These dependencies need to be updated together.\n"
+
+        msg
+      end
+
+      def transitive_removed_dependency_intro
+        msg = "Removes #{dependency_links[0]}. It's no longer used after updating"
+
+        msg += if dependencies.count > 2
+                 " ancestor dependencies #{dependency_links[0..-2].join(', ')} " \
+                   "and #{dependency_links[-1]}. "
+               else
+                 " ancestor dependency #{dependency_links[1]}. "
+               end
+
+        msg += "These dependencies need to be updated together.\n"
+
+        msg
+      end
+
+      def group_intro
+        update_count = dependencies.map(&:name).uniq.count
+
+        msg = "Bumps the #{dependency_group.name} group#{pr_name_directory} with #{update_count} update"
+        msg += if update_count > 1
+                 "s: #{dependency_links[0..-2].join(', ')} and #{dependency_links[-1]}."
+               else
+                 ": #{dependency_links.first}."
+               end
+        msg += "\n"
+
+        msg
       end
 
       def from_version_msg(previous_version)
@@ -255,6 +342,15 @@ module Dependabot
         dependencies.first.
           requirements.
           any? { |r| r.dig(:metadata, :dependency_set) }
+      end
+
+      def removing_a_transitive_dependency?
+        dependencies.any?(&:removed?)
+      end
+
+      def updating_top_level_and_transitive_dependencies?
+        dependencies.any?(&:top_level?) &&
+          dependencies.any? { |dep| !dep.top_level? }
       end
 
       def property_name
@@ -278,14 +374,19 @@ module Dependabot
       end
 
       def dependency_links
-        dependencies.map do |dependency|
-          if source_url(dependency)
-            "[#{dependency.display_name}](#{source_url(dependency)})"
-          elsif homepage_url(dependency)
-            "[#{dependency.display_name}](#{homepage_url(dependency)})"
-          else
-            dependency.display_name
-          end
+        return @dependency_links if defined?(@dependency_links)
+
+        uniq_deps = dependencies.each_with_object({}) { |dep, memo| memo[dep.name] ||= dep }.values
+        @dependency_links = uniq_deps.map { |dep| dependency_link(dep) }
+      end
+
+      def dependency_link(dependency)
+        if source_url(dependency)
+          "[#{dependency.display_name}](#{source_url(dependency)})"
+        elsif homepage_url(dependency)
+          "[#{dependency.display_name}](#{homepage_url(dependency)})"
+        else
+          dependency.display_name
         end
       end
 
@@ -297,8 +398,8 @@ module Dependabot
             "\n\nRemoves `#{dep.display_name}`"
           else
             "\n\nUpdates `#{dep.display_name}` " \
-              "#{from_version_msg(previous_version(dep))}to " \
-              "#{new_version(dep)}" \
+              "#{from_version_msg(dep.humanized_previous_version)}to " \
+              "#{dep.humanized_version}" \
               "#{metadata_links_for_dep(dep)}"
           end
         end.join
@@ -318,11 +419,11 @@ module Dependabot
 
         dependencies.map do |dep|
           msg = if dep.removed?
-                  "\nRemoves `#{dep.display_name}`"
+                  "\nRemoves `#{dep.display_name}`\n"
                 else
                   "\nUpdates `#{dep.display_name}` " \
-                    "#{from_version_msg(previous_version(dep))}" \
-                    "to #{new_version(dep)}"
+                    "#{from_version_msg(dep.humanized_previous_version)}" \
+                    "to #{dep.humanized_version}"
                 end
 
           if vulnerabilities_fixed[dep.name]&.one?
@@ -390,61 +491,6 @@ module Dependabot
           )
       end
 
-      def previous_version(dependency)
-        # If we don't have a previous version, we *may* still be able to figure
-        # one out if a ref was provided and has been changed (in which case the
-        # previous ref was essentially the version).
-        if dependency.previous_version.nil?
-          return ref_changed?(dependency) ? previous_ref(dependency) : nil
-        end
-
-        if dependency.previous_version.match?(/^[0-9a-f]{40}$/)
-          return previous_ref(dependency) if ref_changed?(dependency) && previous_ref(dependency)
-
-          "`#{dependency.previous_version[0..6]}`"
-        elsif dependency.version == dependency.previous_version &&
-              package_manager == "docker"
-          digest = docker_digest_from_reqs(dependency.previous_requirements)
-          "`#{digest.split(':').last[0..6]}`"
-        else
-          dependency.previous_version
-        end
-      end
-
-      def new_version(dependency)
-        if dependency.version.match?(/^[0-9a-f]{40}$/)
-          return new_ref(dependency) if ref_changed?(dependency) && new_ref(dependency)
-
-          "`#{dependency.version[0..6]}`"
-        elsif dependency.version == dependency.previous_version &&
-              package_manager == "docker"
-          digest = docker_digest_from_reqs(dependency.requirements)
-          "`#{digest.split(':').last[0..6]}`"
-        else
-          dependency.version
-        end
-      end
-
-      def docker_digest_from_reqs(requirements)
-        requirements.
-          filter_map { |r| r.dig(:source, "digest") || r.dig(:source, :digest) }.
-          first
-      end
-
-      def previous_ref(dependency)
-        previous_refs = dependency.previous_requirements.filter_map do |r|
-          r.dig(:source, "ref") || r.dig(:source, :ref)
-        end.uniq
-        return previous_refs.first if previous_refs.count == 1
-      end
-
-      def new_ref(dependency)
-        new_refs = dependency.requirements.filter_map do |r|
-          r.dig(:source, "ref") || r.dig(:source, :ref)
-        end.uniq
-        return new_refs.first if new_refs.count == 1
-      end
-
       def old_library_requirement(dependency)
         old_reqs =
           dependency.previous_requirements - dependency.requirements
@@ -455,7 +501,7 @@ module Dependabot
 
         req = old_reqs.first.fetch(:requirement)
         return req if req
-        return previous_ref(dependency) if ref_changed?(dependency)
+        return dependency.previous_ref if dependency.ref_changed?
       end
 
       def new_library_requirement(dependency)
@@ -468,13 +514,9 @@ module Dependabot
 
         req = updated_reqs.first.fetch(:requirement)
         return req if req
-        return new_ref(dependency) if ref_changed?(dependency) && new_ref(dependency)
+        return dependency.new_ref if dependency.ref_changed? && dependency.new_ref
 
         raise "No new requirement!"
-      end
-
-      def ref_changed?(dependency)
-        previous_ref(dependency) != new_ref(dependency)
       end
 
       # TODO: Bring this in line with existing library checks that we do in the
@@ -488,12 +530,12 @@ module Dependabot
                      select { |p| Pathname.new(p).dirname.to_s == "." }
         return true if root_files.select { |nm| nm.end_with?(".gemspec") }.any?
 
-        dependencies.any? { |d| previous_version(d).nil? }
+        dependencies.any? { |d| d.humanized_previous_version.nil? }
       end
 
       def switching_from_ref_to_release?(dependency)
         unless dependency.previous_version&.match?(/^[0-9a-f]{40}$/) ||
-               (dependency.previous_version.nil? && previous_ref(dependency))
+               (dependency.previous_version.nil? && dependency.previous_ref)
           return false
         end
 

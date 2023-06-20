@@ -80,11 +80,9 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
         to start_with("8cea4ecb5b2230fbd4a33a67a4da004f1ccabad48352aaf040")
     end
 
-    # TODO: Fix flaky spec caused by an issue in poetry:
-    # https://github.com/python-poetry/poetry/issues/3010)
     context "with a specified Python version" do
-      let(:pyproject_fixture_name) { "python_2.toml" }
-      let(:lockfile_fixture_name) { "python_2.lock" }
+      let(:pyproject_fixture_name) { "python_310.toml" }
+      let(:lockfile_fixture_name) { "python_310.lock" }
 
       let(:dependency) do
         Dependabot::Dependency.new(
@@ -107,12 +105,17 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
         )
       end
 
-      skip "updates the lockfile successfully" do
+      it "updates the lockfile successfully" do
         updated_lockfile = updated_files.find { |f| f.name == "pyproject.lock" }
 
         lockfile_obj = TomlRB.parse(updated_lockfile.content)
         requests = lockfile_obj["package"].find { |d| d["name"] == "requests" }
         expect(requests["version"]).to eq("2.19.1")
+      end
+      it "does not change python version" do
+        updated_pyproj = updated_files.find { |f| f.name == "pyproject.toml" }
+        pyproj_obj = TomlRB.parse(updated_pyproj.content)
+        pyproj_obj["tool"]["poetry"]["dependencies"]["python"] == "3.10.7"
       end
     end
 
@@ -210,6 +213,123 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
 
         updated_lockfile = updated_files.find { |f| f.name == "pyproject.toml" }
         expect(updated_lockfile.content).to include('  requests = "^2.19.1"')
+      end
+    end
+
+    context "with a pyproject.toml specifying table style dependencies" do
+      let(:dependency_files) { [pyproject] }
+      let(:pyproject_fixture_name) { "table.toml" }
+      let(:dependency_name) { "isort" }
+      let(:dependency) do
+        Dependabot::Dependency.new(
+          name: dependency_name,
+          version: "5.7.0",
+          previous_version: nil,
+          package_manager: "pip",
+          requirements: [{
+            requirement: "^5.7",
+            file: "pyproject.toml",
+            source: nil,
+            groups: ["dev-dependencies"]
+          }],
+          previous_requirements: [{
+            requirement: "^5.4",
+            file: "pyproject.toml",
+            source: nil,
+            groups: ["dev-dependencies"]
+          }]
+        )
+      end
+
+      it "updates the pyproject.toml correctly" do
+        expect(updated_files.map(&:name)).to eq(%w(pyproject.toml))
+
+        updated_lockfile = updated_files.find { |f| f.name == "pyproject.toml" }
+
+        expect(updated_lockfile.content).to include <<~TOML
+          [tool.poetry.dev-dependencies.isort]
+          version = "^5.7"
+        TOML
+      end
+    end
+
+    context "with a pyproject.toml specifying table style dependencies with version as the last field" do
+      let(:dependency_files) { [pyproject] }
+      let(:pyproject_fixture_name) { "table_version_last.toml" }
+      let(:dependency_name) { "isort" }
+      let(:dependency) do
+        Dependabot::Dependency.new(
+          name: dependency_name,
+          version: "5.7.0",
+          previous_version: nil,
+          package_manager: "pip",
+          requirements: [{
+            requirement: "^5.7",
+            file: "pyproject.toml",
+            source: nil,
+            groups: ["dev-dependencies"]
+          }],
+          previous_requirements: [{
+            requirement: "^5.4",
+            file: "pyproject.toml",
+            source: nil,
+            groups: ["dev-dependencies"]
+          }]
+        )
+      end
+
+      it "updates the pyproject.toml correctly" do
+        expect(updated_files.map(&:name)).to eq(%w(pyproject.toml))
+
+        updated_lockfile = updated_files.find { |f| f.name == "pyproject.toml" }
+
+        expect(updated_lockfile.content).to include <<~TOML
+          [tool.poetry.dev-dependencies.isort]
+          extras = [ "pyproject",]
+          version = "^5.7"
+        TOML
+      end
+    end
+
+    context "with a pyproject.toml specifying table style dependencies with version conflicting with other deps" do
+      let(:dependency_files) { [pyproject] }
+      let(:pyproject_fixture_name) { "table_version_conflicts.toml" }
+      let(:dependency_name) { "isort" }
+      let(:dependency) do
+        Dependabot::Dependency.new(
+          name: dependency_name,
+          version: "5.7.0",
+          previous_version: nil,
+          package_manager: "pip",
+          requirements: [{
+            requirement: "^5.7",
+            file: "pyproject.toml",
+            source: nil,
+            groups: ["dev-dependencies"]
+          }],
+          previous_requirements: [{
+            requirement: "^5.4",
+            file: "pyproject.toml",
+            source: nil,
+            groups: ["dev-dependencies"]
+          }]
+        )
+      end
+
+      it "updates the pyproject.toml correctly" do
+        expect(updated_files.map(&:name)).to eq(%w(pyproject.toml))
+
+        updated_lockfile = updated_files.find { |f| f.name == "pyproject.toml" }
+
+        expect(updated_lockfile.content).to include <<~TOML
+          [tool.poetry.dev-dependencies.isort]
+          extras = [ "pyproject",]
+          version = "^5.7"
+
+          [tool.poetry.dev-dependencies.pytest]
+          extras = [ "pyproject",]
+          version = "^5.4"
+        TOML
       end
     end
 

@@ -5,7 +5,8 @@ require "pathname"
 module Dependabot
   class DependencyFile
     attr_accessor :name, :content, :directory, :type, :support_file,
-                  :symlink_target, :content_encoding, :operation
+                  :vendored_file, :symlink_target, :content_encoding,
+                  :operation, :mode
 
     class ContentEncoding
       UTF_8 = "utf-8"
@@ -19,13 +20,15 @@ module Dependabot
     end
 
     def initialize(name:, content:, directory: "/", type: "file",
-                   support_file: false, symlink_target: nil,
-                   content_encoding: ContentEncoding::UTF_8, deleted: false, operation: Operation::UPDATE)
+                   support_file: false, vendored_file: false, symlink_target: nil,
+                   content_encoding: ContentEncoding::UTF_8, deleted: false,
+                   operation: Operation::UPDATE, mode: nil)
       @name = name
       @content = content
       @directory = clean_directory(directory)
       @symlink_target = symlink_target
       @support_file = support_file
+      @vendored_file = vendored_file
       @content_encoding = content_encoding
       @operation = operation
 
@@ -39,6 +42,12 @@ module Dependabot
       # New use cases should be avoided if at all possible (and use the
       # support_file flag instead)
       @type = type
+
+      begin
+        @mode = File.stat((symlink_target || path).sub(%r{^/}, "")).mode.to_s(8)
+      rescue StandardError
+        @mode = mode
+      end
 
       return unless (type == "symlink") ^ symlink_target
 
@@ -55,7 +64,8 @@ module Dependabot
         "support_file" => support_file,
         "content_encoding" => content_encoding,
         "deleted" => deleted,
-        "operation" => operation
+        "operation" => operation,
+        "mode" => mode
       }
 
       details["symlink_target"] = symlink_target if symlink_target
@@ -79,11 +89,15 @@ module Dependabot
     end
 
     def eql?(other)
-      self.==(other)
+      self == other
     end
 
     def support_file?
       @support_file
+    end
+
+    def vendored_file?
+      @vendored_file
     end
 
     def deleted

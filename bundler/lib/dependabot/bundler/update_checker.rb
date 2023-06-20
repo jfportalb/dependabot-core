@@ -60,19 +60,8 @@ module Dependabot
       end
 
       def updated_requirements
-        latest_version_for_req_updater =
-          if switching_source_from_git_to_rubygems?
-            git_commit_checker.local_tag_for_latest_version.fetch(:version).to_s
-          else
-            latest_version_details&.fetch(:version)&.to_s
-          end
-
-        latest_resolvable_version_for_req_updater =
-          if switching_source_from_git_to_rubygems?
-            latest_version_for_req_updater
-          else
-            preferred_resolvable_version_details&.fetch(:version)&.to_s
-          end
+        latest_version_for_req_updater = latest_version_details&.fetch(:version)&.to_s
+        latest_resolvable_version_for_req_updater = preferred_resolvable_version_details&.fetch(:version)&.to_s
 
         RequirementsUpdater.new(
           requirements: dependency.requirements,
@@ -84,8 +73,10 @@ module Dependabot
       end
 
       def requirements_unlocked_or_can_be?
-        dependency.requirements.
-          select { |r| requirement_class.new(r[:requirement]).specific? }.
+        return true if requirements_unlocked?
+        return false if requirements_update_strategy == :lockfile_only
+
+        dependency.specific_requirements.
           all? do |req|
             file = dependency_files.find { |f| f.name == req.fetch(:file) }
             updated = FileUpdater::RequirementReplacer.new(
@@ -120,8 +111,13 @@ module Dependabot
 
       private
 
+      def requirements_unlocked?
+        dependency.specific_requirements.none?
+      end
+
       def latest_version_resolvable_with_full_unlock?
         return false unless latest_version
+        return false if version_resolver(remove_git_source: false).latest_allowable_version_incompatible_with_ruby?
 
         updated_dependencies = force_updater.updated_dependencies
 
@@ -298,9 +294,6 @@ module Dependabot
         # Never need to update source, unless a git_dependency
         return dependency_source_details unless git_dependency?
 
-        # Source becomes `nil` if switching to default rubygems
-        return nil if should_switch_source_from_git_to_rubygems?
-
         # Update the git tag if updating a pinned version
         if git_commit_checker.pinned_ref_looks_like_version? &&
            latest_git_tag_is_resolvable?
@@ -319,19 +312,6 @@ module Dependabot
         raise "Multiple sources! #{sources.join(', ')}" if sources.count > 1
 
         sources.first
-      end
-
-      def should_switch_source_from_git_to_rubygems?
-        return false unless git_dependency?
-        return false if latest_resolvable_version_for_git_dependency.nil?
-
-        Gem::Version.correct?(latest_resolvable_version_for_git_dependency)
-      end
-
-      def switching_source_from_git_to_rubygems?
-        return false unless updated_source&.fetch(:ref, nil)
-
-        updated_source.fetch(:ref) != dependency_source_details.fetch(:ref)
       end
 
       def force_updater

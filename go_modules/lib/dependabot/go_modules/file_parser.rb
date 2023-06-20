@@ -12,8 +12,6 @@ require "dependabot/file_parsers/base"
 module Dependabot
   module GoModules
     class FileParser < Dependabot::FileParsers::Base
-      GIT_VERSION_REGEX = /^v\d+\.\d+\.\d+-.*-(?<sha>[0-9a-f]{12})$/.freeze
-
       def parse
         dependency_set = Dependabot::FileParsers::Base::DependencySet.new
 
@@ -35,16 +33,11 @@ module Dependabot
       end
 
       def dependency_from_details(details)
-        source =
-          if rev_identifier?(details) then git_source(details)
-          else
-            { type: "default", source: details["Path"] }
-          end
-
+        source = { type: "default", source: details["Path"] }
         version = details["Version"]&.sub(/^v?/, "")
 
         reqs = [{
-          requirement: rev_identifier?(details) ? nil : details["Version"],
+          requirement: details["Version"],
           file: go_mod.name,
           source: source,
           groups: []
@@ -53,7 +46,7 @@ module Dependabot
         Dependency.new(
           name: details["Path"],
           version: version,
-          requirements: details["Indirect"] || dependency_is_replaced(details) ? [] : reqs,
+          requirements: details["Indirect"] ? [] : reqs,
           package_manager: "go_modules"
         )
       end
@@ -115,51 +108,14 @@ module Dependabot
         raise Dependabot::DependencyFileNotParseable.new(go_mod.path, msg)
       end
 
-      def rev_identifier?(dep)
-        dep["Version"]&.match?(GIT_VERSION_REGEX)
-      end
-
-      def git_source(dep)
-        url = PathConverter.git_url_for_path(dep["Path"])
-
-        # Currently, we have no way of knowing whether the commit tagged
-        # is being used because a branch is being followed or because a
-        # particular ref is in use. We *assume* that a particular ref is in
-        # use (which means we'll only propose updates when its included in
-        # a release)
-        {
-          type: "git",
-          url: url || dep["Path"],
-          ref: git_revision(dep),
-          branch: nil
-        }
-      rescue Dependabot::SharedHelpers::HelperSubprocessFailed => e
-        if e.message == "Cannot detect VCS"
-          msg = e.message + " for #{dep['Path']}. Attempted to detect VCS " \
-                            "because the version looks like a git revision: " \
-                            "#{dep['Version']}"
-          raise Dependabot::DependencyFileNotResolvable, msg
-        end
-
-        raise
-      end
-
-      def git_revision(dep)
-        raw_version = dep.fetch("Version")
-        return raw_version unless raw_version.match?(GIT_VERSION_REGEX)
-
-        raw_version.match(GIT_VERSION_REGEX).named_captures.fetch("sha")
-      end
-
       def skip_dependency?(dep)
-        return true if dep["Indirect"]
+        # Updating replaced dependencies is not supported
+        return true if dependency_is_replaced(dep)
 
-        begin
-          path_uri = URI.parse("https://#{dep['Path']}")
-          !path_uri.host.include?(".")
-        rescue URI::InvalidURIError
-          false
-        end
+        path_uri = URI.parse("https://#{dep['Path']}")
+        !path_uri.host.include?(".")
+      rescue URI::InvalidURIError
+        false
       end
 
       def dependency_is_replaced(details)

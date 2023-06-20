@@ -10,6 +10,7 @@ require "stackprof"
 require "uri"
 
 require "dependabot/dependency_file"
+require "dependabot/experiments"
 require "dependabot/registry_client"
 require_relative "dummy_package_manager/dummy"
 require_relative "warning_monkey_patch"
@@ -33,16 +34,23 @@ if ENV["COVERAGE"]
   end
 end
 
+Dependabot::SharedHelpers.run_shell_command("git config --global user.email no-reply@github.com")
+Dependabot::SharedHelpers.run_shell_command("git config --global user.name dependabot-ci")
+
 RSpec.configure do |config|
   config.color = true
   config.order = :rand
   config.mock_with(:rspec) { |mocks| mocks.verify_partial_doubles = true }
+  config.expect_with(:rspec) { |expectations| expectations.max_formatted_output_length = 1000 }
   config.raise_errors_for_deprecations!
   config.example_status_persistence_file_path = ".rspec_status"
 
   config.after do
     # Ensure we clear any cached timeouts between tests
     Dependabot::RegistryClient.clear_cache!
+
+    # Ensure we reset any experiments between tests
+    Dependabot::Experiments.reset!
   end
 
   config.around do |example|
@@ -139,14 +147,6 @@ def project_dependency_files(project, directory: "/")
       )
     end
   end
-end
-
-def capture_stderr
-  previous_stderr = $stderr
-  $stderr = StringIO.new
-  yield
-ensure
-  $stderr = previous_stderr
 end
 
 # Spec helper to provide GitHub credentials if set via an environment variable

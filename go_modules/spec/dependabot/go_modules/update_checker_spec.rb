@@ -63,12 +63,11 @@ RSpec.describe Dependabot::GoModules::UpdateChecker do
       end
     end
 
-    context "doesn't update indirect dependencies (not supported)" do
+    context "updates indirect dependencies" do
       let(:requirements) { [] }
-      it do
-        is_expected.to eq(
-          Dependabot::GoModules::Version.new(dependency.version)
-        )
+
+      it "updates to the newer version" do
+        is_expected.to eq(Dependabot::GoModules::Version.new("1.1.0"))
       end
     end
 
@@ -123,12 +122,11 @@ RSpec.describe Dependabot::GoModules::UpdateChecker do
       end
     end
 
-    context "doesn't update indirect dependencies (not supported)" do
+    context "updates indirect dependencies" do
       let(:requirements) { [] }
-      it do
-        is_expected.to eq(
-          Dependabot::GoModules::Version.new(dependency.version)
-        )
+
+      it "updates to the least new supported version" do
+        is_expected.to eq(Dependabot::GoModules::Version.new("1.0.5"))
       end
     end
 
@@ -139,6 +137,53 @@ RSpec.describe Dependabot::GoModules::UpdateChecker do
         expect { lowest_resolvable_security_fix_version.to }.to raise_error(RuntimeError) do |error|
           expect(error.message).to eq("Dependency not vulnerable!")
         end
+      end
+    end
+  end
+
+  describe "#vulnerable?" do
+    subject(:vulnerable?) { checker.vulnerable? }
+
+    let(:dependency_version) { "1.0.0" }
+    let(:security_advisories) do
+      [
+        Dependabot::SecurityAdvisory.new(
+          dependency_name: dependency_name,
+          package_manager: "go_modules",
+          vulnerable_versions: ["< 1.0.1"]
+        )
+      ]
+    end
+
+    context "when the current version is vulnerable" do
+      it "returns true" do
+        is_expected.to eq(true)
+      end
+    end
+
+    context "when the current version is not vulnerable" do
+      let(:dependency_version) { "1.0.1" }
+
+      it "returns false" do
+        is_expected.to eq(false)
+      end
+    end
+
+    context "when it's a vulnerable pseudo-version" do
+      # Go generates pseudo-versions which are comparable, so we can tell if
+      # it is vulnerable, unlike other ecosystems that allow bare SHAs.
+      let(:dependency_version) { "0.0.0-20180826012351-8a410e7b638d" }
+      let(:requirements) do
+        [{
+          file: "go.mod",
+          requirement: dependency_version,
+          groups: [],
+          source: { type: "git", source: dependency_name }
+        }]
+      end
+
+      it "returns true" do
+        is_expected.to eq(true)
       end
     end
   end

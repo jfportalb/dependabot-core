@@ -12,7 +12,7 @@ require "dependabot/registry_client"
 module Dependabot
   module Maven
     class MetadataFinder < Dependabot::MetadataFinders::Base
-      DOT_SEPARATOR_REGEX = %r{\.(?!\d+([.\/_\-]|$)+)}.freeze
+      DOT_SEPARATOR_REGEX = %r{\.(?!\d+([.\/_\-]|$)+)}
 
       private
 
@@ -42,7 +42,7 @@ module Dependabot
           any? { |f| dependency_artifact_id.end_with?(f.name) }
       rescue Dependabot::BranchNotFound
         # If we are attempting to find a branch, we should fail over to the default branch and retry once only
-        if tmp_source.branch.present?
+        unless tmp_source.branch.to_s.empty?
           tmp_source.branch = nil
           retry
         end
@@ -149,7 +149,7 @@ module Dependabot
 
         source&.fetch(:url, nil) ||
           source&.fetch("url") ||
-          Maven::FileParser::RepositoriesFinder::CENTRAL_REPO_URL
+          Maven::FileParser::RepositoriesFinder.new(credentials: credentials).central_repo_url
       end
 
       def maven_repo_dependency_url

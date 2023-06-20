@@ -6,7 +6,7 @@ require "dependabot/errors"
 
 module Dependabot
   class GitMetadataFetcher
-    KNOWN_HOSTS = /github\.com|bitbucket\.org|gitlab.com/i.freeze
+    KNOWN_HOSTS = /github\.com|bitbucket\.org|gitlab.com/i
 
     def initialize(url:, credentials:)
       @url = url
@@ -22,7 +22,21 @@ module Dependabot
     def tags
       return [] unless upload_pack
 
-      @tags ||= tags_for_upload_pack
+      @tags ||= tags_for_upload_pack.map do |ref|
+        OpenStruct.new(
+          name: ref.name,
+          tag_sha: ref.ref_sha,
+          commit_sha: ref.commit_sha
+        )
+      end
+    end
+
+    def tags_for_upload_pack
+      @tags_for_upload_pack ||= refs_for_upload_pack.select { |ref| ref.ref_type == :tag }
+    end
+
+    def refs_for_upload_pack
+      @refs_for_upload_pack ||= parse_refs_for_upload_pack
     end
 
     def ref_names
@@ -41,6 +55,12 @@ module Dependabot
 
       refs_for_upload_pack.
         find { |r| r.name == ref }&.
+        commit_sha
+    end
+
+    def head_commit_for_ref_sha(ref)
+      refs_for_upload_pack.
+        find { |r| r.ref_sha == ref }&.
         commit_sha
     end
 
@@ -86,9 +106,9 @@ module Dependabot
 
     def fetch_raw_upload_pack_with_git_for(uri)
       service_pack_uri = uri
-      service_pack_uri += ".git" unless service_pack_uri.end_with?(".git")
+      service_pack_uri += ".git" unless service_pack_uri.end_with?(".git") || skip_git_suffix(uri)
 
-      env = { "PATH" => ENV.fetch("PATH", nil) }
+      env = { "PATH" => ENV.fetch("PATH", nil), "GIT_TERMINAL_PROMPT" => "0" }
       command = "git ls-remote #{service_pack_uri}"
       command = SharedHelpers.escape_command(command)
 
@@ -100,22 +120,6 @@ module Dependabot
       else
         OpenStruct.new(body: stderr, status: 500)
       end
-    end
-
-    def tags_for_upload_pack
-      refs_for_upload_pack.
-        select { |ref| ref.ref_type == :tag }.
-        map do |ref|
-          OpenStruct.new(
-            name: ref.name,
-            tag_sha: ref.ref_sha,
-            commit_sha: ref.commit_sha
-          )
-        end
-    end
-
-    def refs_for_upload_pack
-      @refs_for_upload_pack ||= parse_refs_for_upload_pack
     end
 
     def parse_refs_for_upload_pack
@@ -154,40 +158,45 @@ module Dependabot
     def service_pack_uri(uri)
       service_pack_uri = uri_with_auth(uri)
       service_pack_uri = service_pack_uri.gsub(%r{/$}, "")
-      service_pack_uri += ".git" unless service_pack_uri.end_with?(".git")
+      service_pack_uri += ".git" unless service_pack_uri.end_with?(".git") || skip_git_suffix(uri)
       service_pack_uri + "/info/refs?service=git-upload-pack"
     end
 
-    def uri_with_auth(uri)
-      bare_uri =
-        if uri.include?("git@") then uri.split("git@").last.sub(%r{:/?}, "/")
-        else
-          uri.sub(%r{.*?://}, "")
-        end
-      cred = credentials.select { |c| c["type"] == "git_source" }.
-             find { |c| bare_uri.start_with?(c["host"]) }
-
-      scheme = scheme_for_uri(uri)
-
-      if bare_uri.match?(%r{[^/]+:[^/]+@})
-        # URI already has authentication details
-        "#{scheme}://#{bare_uri}"
-      elsif cred&.fetch("username", nil) && cred&.fetch("password", nil)
-        # URI doesn't have authentication details, but we have credentials
-        auth_string = "#{cred.fetch('username')}:#{cred.fetch('password')}"
-        "#{scheme}://#{auth_string}@#{bare_uri}"
-      else
-        # No credentials, so just return the http(s) URI
-        "#{scheme}://#{bare_uri}"
-      end
+    def skip_git_suffix(uri)
+      # TODO: Unlike the other providers (GitHub, GitLab, BitBucket), as of 2023-01-18 Azure DevOps does not support the
+      # ".git" suffix. It will return a 404.
+      # So skip adding ".git" if looks like an ADO URI.
+      # There's no access to the source object here, so have to check the URI instead.
+      # Even if we had the current source object, the URI may be for a dependency hosted elsewhere.
+      # Unfortunately as a consequence, urls pointing to Azure DevOps Server will not work.
+      # Only alternative is to remove the addition of ".git" suffix since the other providers
+      # (GitHub, GitLab, BitBucket) work with or without the suffix.
+      # That change has other ramifications, so it'd be better if Azure started supporting ".git"
+      # like all the other providers.
+      uri = "https://#{uri.split('git@').last.sub(%r{:/?}, '/')}" if uri.start_with?("git@")
+      uri = URI(uri)
+      hostname = uri.hostname.to_s
+      hostname == "dev.azure.com" || hostname.end_with?(".visualstudio.com")
     end
 
-    def scheme_for_uri(uri)
-      if uri.match?(%r{^http://})
-        "http"
-      else
-        "https"
+    # Add in username and password if present in credentials.
+    # Credentials are never present for production Dependabot.
+    def uri_with_auth(uri)
+      # Handle SCP-style git URIs
+      uri = "https://#{uri.split('git@').last.sub(%r{:/?}, '/')}" if uri.start_with?("git@")
+      uri = URI(uri)
+      cred = credentials.select { |c| c["type"] == "git_source" }.
+             find { |c| uri.host == c["host"] }
+
+      uri.scheme = "https" if uri.scheme != "http"
+
+      if !uri.password && cred&.fetch("username", nil) && cred&.fetch("password", nil)
+        # URI doesn't have authentication details, but we have credentials
+        uri.user = URI.encode_www_form_component(cred["username"])
+        uri.password = URI.encode_www_form_component(cred["password"])
       end
+
+      uri.to_s
     end
 
     def sha_for_update_pack_line(line)

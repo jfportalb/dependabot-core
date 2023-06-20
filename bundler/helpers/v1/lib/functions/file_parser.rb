@@ -13,7 +13,7 @@ module Functions
     def parsed_gemfile(gemfile_name:)
       Bundler::Definition.build(gemfile_name, nil, {}).
         dependencies.select(&:current_platform?).
-        reject { |dep| dep.source.is_a?(Bundler::Source::Gemspec) }.
+        reject { |dep| local_sources.include?(dep.source.class) }.
         map { |dep| serialize_bundler_dependency(dep) }
     end
 
@@ -66,7 +66,7 @@ module Functions
     def git_source_details(source)
       {
         url: source.uri,
-        branch: source.branch || "master",
+        branch: source.branch,
         ref: source.ref
       }
     end
@@ -103,9 +103,15 @@ module Functions
         NilClass,
         Bundler::Source::Rubygems,
         Bundler::Source::Git,
-        Bundler::Source::Path,
-        Bundler::Source::Gemspec,
+        *local_sources,
         Bundler::Source::Metadata
+      ]
+    end
+
+    def local_sources
+      [
+        Bundler::Source::Path,
+        Bundler::Source::Gemspec
       ]
     end
   end

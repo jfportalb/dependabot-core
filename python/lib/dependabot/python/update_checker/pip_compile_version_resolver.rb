@@ -11,6 +11,7 @@ require "dependabot/python/file_updater/requirement_replacer"
 require "dependabot/python/file_updater/setup_file_sanitizer"
 require "dependabot/python/version"
 require "dependabot/shared_helpers"
+require "dependabot/python/language_version_manager"
 require "dependabot/python/native_helpers"
 require "dependabot/python/python_versions"
 require "dependabot/python/name_normaliser"
@@ -24,16 +25,14 @@ module Dependabot
       # - Run `pip-compile` and see what the result is
       # rubocop:disable Metrics/ClassLength
       class PipCompileVersionResolver
-        GIT_DEPENDENCY_UNREACHABLE_REGEX =
-          /git clone --filter=blob:none --quiet (?<url>[^\s]+).* /.freeze
-        GIT_REFERENCE_NOT_FOUND_REGEX =
-          /Did not find branch or tag '(?<tag>[^\n"]+)'/m.freeze
+        GIT_DEPENDENCY_UNREACHABLE_REGEX = /git clone --filter=blob:none --quiet (?<url>[^\s]+).* /
+        GIT_REFERENCE_NOT_FOUND_REGEX = /Did not find branch or tag '(?<tag>[^\n"]+)'/m
         NATIVE_COMPILATION_ERROR =
           "pip._internal.exceptions.InstallationSubprocessError: Command errored out with exit status 1:"
         # See https://packaging.python.org/en/latest/tutorials/packaging-projects/#configuring-metadata
-        PYTHON_PACKAGE_NAME_REGEX = /[A-Za-z0-9_\-]+/.freeze
+        PYTHON_PACKAGE_NAME_REGEX = /[A-Za-z0-9_\-]+/
         RESOLUTION_IMPOSSIBLE_ERROR = "ResolutionImpossible"
-        ERROR_REGEX = /(?<=ERROR\:\W).*$/.freeze
+        ERROR_REGEX = /(?<=ERROR\:\W).*$/
 
         attr_reader :dependency, :dependency_files, :credentials
 
@@ -72,19 +71,32 @@ module Dependabot
             SharedHelpers.in_a_temporary_directory do
               SharedHelpers.with_git_configured(credentials: credentials) do
                 write_temporary_dependency_files(updated_req: requirement)
-                install_required_python
+                language_version_manager.install_required_python
 
                 filenames_to_compile.each do |filename|
                   # Shell out to pip-compile.
                   # This is slow, as pip-compile needs to do installs.
+                  options = pip_compile_options(filename)
+                  options_fingerprint = pip_compile_options_fingerprint(options)
+
                   run_pip_compile_command(
-                    "pyenv exec pip-compile -v #{pip_compile_options(filename)} -P #{dependency.name} #{filename}"
+                    "pyenv exec pip-compile -v #{options} -P #{dependency.name} #{filename}",
+                    fingerprint: "pyenv exec pip-compile -v #{options_fingerprint} -P <dependency_name> <filename>"
                   )
-                  # Run pip-compile a second time, without an update argument,
-                  # to ensure it handles markers correctly
-                  write_original_manifest_files unless dependency.top_level?
+
+                  next if dependency.top_level?
+
+                  # Run pip-compile a second time for transient dependencies
+                  # to make sure we do not update dependencies that are
+                  # superfluous. pip-compile does not detect these when
+                  # updating a specific dependency with the -P option.
+                  # Running pip-compile a second time will automatically remove
+                  # superfluous dependencies. Dependabot then marks those with
+                  # update_not_possible.
+                  write_original_manifest_files
                   run_pip_compile_command(
-                    "pyenv exec pip-compile #{pip_compile_options(filename)} #{filename}"
+                    "pyenv exec pip-compile #{options} #{filename}",
+                    fingerprint: "pyenv exec pip-compile #{options_fingerprint} <filename>"
                   )
                 end
 
@@ -161,6 +173,10 @@ module Dependabot
             raise GitDependenciesNotReachable, url
           end
 
+          raise Dependabot::OutOfDisk if error.message.end_with?("[Errno 28] No space left on device")
+
+          raise Dependabot::OutOfMemory if error.message.end_with?("MemoryError")
+
           raise
         end
         # rubocop:enable Metrics/AbcSize
@@ -176,8 +192,12 @@ module Dependabot
               write_temporary_dependency_files(update_requirement: false)
 
               filenames_to_compile.each do |filename|
+                options = pip_compile_options(filename)
+                options_fingerprint = pip_compile_options_fingerprint(options)
+
                 run_pip_compile_command(
-                  "pyenv exec pip-compile #{pip_compile_options(filename)} #{filename}"
+                  "pyenv exec pip-compile #{options} #{filename}",
+                  fingerprint: "pyenv exec pip-compile #{options_fingerprint} <filename>"
                 )
               end
 
@@ -197,7 +217,7 @@ module Dependabot
           end
         end
 
-        def run_command(command, env: python_env)
+        def run_command(command, env: python_env, fingerprint:)
           start = Time.now
           command = SharedHelpers.escape_command(command)
           stdout, process = Open3.capture2e(env, command)
@@ -209,6 +229,7 @@ module Dependabot
             message: stdout,
             error_context: {
               command: command,
+              fingerprint: fingerprint,
               time_taken: time_taken,
               process_exit_value: process.to_s
             }
@@ -216,7 +237,17 @@ module Dependabot
         end
 
         def new_resolver_supported?
-          python_version >= Python::Version.new("3.7")
+          language_version_manager.python_version >= Python::Version.new("3.7")
+        end
+
+        def pip_compile_options_fingerprint(options)
+          options.sub(
+            /--output-file=\S+/, "--output-file=<output_file>"
+          ).sub(
+            /--index-url=\S+/, "--index-url=<index_url>"
+          ).sub(
+            /--extra-index-url=\S+/, "--extra-index-url=<extra_index_url>"
+          )
         end
 
         def pip_compile_options(filename)
@@ -246,9 +277,13 @@ module Dependabot
             end
         end
 
-        def run_pip_compile_command(command)
-          run_command("pyenv local #{python_version}")
-          run_command(command)
+        def run_pip_compile_command(command, fingerprint:)
+          run_command(
+            "pyenv local #{language_version_manager.python_major_minor}",
+            fingerprint: "pyenv local <python_major_minor>"
+          )
+
+          run_command(command, fingerprint: fingerprint)
         end
 
         def python_env
@@ -291,7 +326,7 @@ module Dependabot
           end
 
           # Overwrite the .python-version with updated content
-          File.write(".python-version", python_version)
+          File.write(".python-version", language_version_manager.python_major_minor)
 
           setup_files.each do |file|
             path = file.name
@@ -311,15 +346,6 @@ module Dependabot
             FileUtils.mkdir_p(Pathname.new(file.name).dirname)
             File.write(file.name, file.content)
           end
-        end
-
-        def install_required_python
-          return if run_command("pyenv versions").include?("#{python_version}\n")
-
-          run_command("pyenv install -s #{python_version}")
-          run_command("pyenv exec pip install --upgrade pip")
-          run_command("pyenv exec pip install -r" \
-                      "#{NativeHelpers.python_requirements_path}")
         end
 
         def sanitized_setup_file_content(file)
@@ -412,9 +438,9 @@ module Dependabot
           while (remaining_filenames = filenames - ordered_filenames).any?
             ordered_filenames +=
               remaining_filenames.
-              select do |fn|
+              reject do |fn|
                 unupdated_reqs = requirement_map[fn] - ordered_filenames
-                (unupdated_reqs & filenames).empty?
+                unupdated_reqs.intersect?(filenames)
               end
           end
 
@@ -457,41 +483,6 @@ module Dependabot
           ).parse.find { |d| d.name == dependency.name }&.version
         end
 
-        def python_version
-          @python_version ||=
-            user_specified_python_version ||
-            python_version_matching_imputed_requirements ||
-            PythonVersions::PRE_INSTALLED_PYTHON_VERSIONS.first
-        end
-
-        def user_specified_python_version
-          return unless python_requirement_parser.user_specified_requirements.any?
-
-          user_specified_requirements =
-            python_requirement_parser.user_specified_requirements.
-            map { |r| Python::Requirement.requirements_array(r) }
-          python_version_matching(user_specified_requirements)
-        end
-
-        def python_version_matching_imputed_requirements
-          compiled_file_python_requirement_markers =
-            python_requirement_parser.imputed_requirements.map do |r|
-              Dependabot::Python::Requirement.new(r)
-            end
-          python_version_matching(compiled_file_python_requirement_markers)
-        end
-
-        def python_version_matching(requirements)
-          PythonVersions::SUPPORTED_VERSIONS_TO_ITERATE.find do |version_string|
-            version = Python::Version.new(version_string)
-            requirements.all? do |req|
-              next req.any? { |r| r.satisfied_by?(version) } if req.is_a?(Array)
-
-              req.satisfied_by?(version)
-            end
-          end
-        end
-
         def python_requirement_parser
           @python_requirement_parser ||=
             FileParser::PythonRequirementParser.new(
@@ -499,8 +490,11 @@ module Dependabot
             )
         end
 
-        def pre_installed_python?(version)
-          PythonVersions::PRE_INSTALLED_PYTHON_VERSIONS.include?(version)
+        def language_version_manager
+          @language_version_manager ||=
+            LanguageVersionManager.new(
+              python_requirement_parser: python_requirement_parser
+            )
         end
 
         def setup_files

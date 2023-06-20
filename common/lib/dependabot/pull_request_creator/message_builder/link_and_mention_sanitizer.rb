@@ -8,19 +8,19 @@ module Dependabot
   class PullRequestCreator
     class MessageBuilder
       class LinkAndMentionSanitizer
-        GITHUB_USERNAME = /[a-z0-9]+(-[a-z0-9]+)*/i.freeze
+        GITHUB_USERNAME = /[a-z0-9]+(-[a-z0-9]+)*/i
         GITHUB_REF_REGEX = %r{
           (?:https?://)?
           github\.com/(?<repo>#{GITHUB_USERNAME}/[^/\s]+)/
           (?:issue|pull)s?/(?<number>\d+)
-        }x.freeze
+        }x
         # [^/\s#]+ means one or more characters not matching (^) the class /, whitespace (\s), or #
-        GITHUB_NWO_REGEX = %r{(?<repo>#{GITHUB_USERNAME}/[^/\s#]+)#(?<number>\d+)}.freeze
-        MENTION_REGEX = %r{(?<![A-Za-z0-9`~])@#{GITHUB_USERNAME}/?}.freeze
+        GITHUB_NWO_REGEX = %r{(?<repo>#{GITHUB_USERNAME}/[^/\s#]+)#(?<number>\d+)}
+        MENTION_REGEX = %r{(?<![A-Za-z0-9`~])@#{GITHUB_USERNAME}/?}
         # regex to match a team mention on github
-        TEAM_MENTION_REGEX = %r{(?<![A-Za-z0-9`~])@(?<org>#{GITHUB_USERNAME})/(?<team>#{GITHUB_USERNAME})/?}.freeze
+        TEAM_MENTION_REGEX = %r{(?<![A-Za-z0-9`~])@(?<org>#{GITHUB_USERNAME})/(?<team>#{GITHUB_USERNAME})/?}
         # End of string
-        EOS_REGEX = /\z/.freeze
+        EOS_REGEX = /\z/
         COMMONMARKER_OPTIONS = %i(
           GITHUB_PRE_LANG FULL_INFO_STRING
         ).freeze
@@ -34,7 +34,7 @@ module Dependabot
           @github_redirection_service = github_redirection_service
         end
 
-        def sanitize_links_and_mentions(text:, unsafe: false)
+        def sanitize_links_and_mentions(text:, unsafe: false, format_html: true)
           doc = CommonMarker.render_doc(
             text, :LIBERAL_HTML_TAG, COMMONMARKER_EXTENSIONS
           )
@@ -45,6 +45,8 @@ module Dependabot
           sanitize_nwo_text(doc)
 
           mode = unsafe ? :UNSAFE : :DEFAULT
+          return doc.to_commonmark([mode] + COMMONMARKER_OPTIONS) unless format_html
+
           doc.to_html(([mode] + COMMONMARKER_OPTIONS), COMMONMARKER_EXTENSIONS)
         end
 

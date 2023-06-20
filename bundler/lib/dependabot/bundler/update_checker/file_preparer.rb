@@ -24,7 +24,7 @@ module Dependabot
       #   version allowed by the gemspec, if the gemspec has a required ruby
       #   version range
       class FilePreparer
-        VERSION_REGEX = /[0-9]+(?:\.[A-Za-z0-9\-_]+)*/.freeze
+        VERSION_REGEX = /[0-9]+(?:\.[A-Za-z0-9\-_]+)*/
 
         # Can't be a constant because some of these don't exist in bundler
         # 1.15, which Heroku uses, which causes an exception on boot.
@@ -143,8 +143,7 @@ module Dependabot
 
         def top_level_gemspecs
           dependency_files.
-            select { |f| f.name.end_with?(".gemspec") }.
-            reject(&:support_file?)
+            select { |f| f.name.end_with?(".gemspec") }
         end
 
         def ruby_version_file

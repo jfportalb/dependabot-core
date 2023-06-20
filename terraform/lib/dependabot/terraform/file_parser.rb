@@ -24,7 +24,7 @@ module Dependabot
       DEFAULT_REGISTRY = "registry.terraform.io"
       DEFAULT_NAMESPACE = "hashicorp"
       # https://www.terraform.io/docs/language/providers/requirements.html#source-addresses
-      PROVIDER_SOURCE_ADDRESS = %r{\A((?<hostname>.+)/)?(?<namespace>.+)/(?<name>.+)\z}.freeze
+      PROVIDER_SOURCE_ADDRESS = %r{\A((?<hostname>.+)/)?(?<namespace>.+)/(?<name>.+)\z}
 
       def parse
         dependency_set = DependencySet.new
@@ -186,10 +186,12 @@ module Dependabot
 
       def provider_source_from(source_address, name)
         matches = source_address&.match(PROVIDER_SOURCE_ADDRESS)
+        matches = {} if matches.nil?
+
         [
-          matches.try(:[], :hostname) || DEFAULT_REGISTRY,
-          matches.try(:[], :namespace) || DEFAULT_NAMESPACE,
-          matches.try(:[], :name) || name
+          matches[:hostname] || DEFAULT_REGISTRY,
+          matches[:namespace] || DEFAULT_NAMESPACE,
+          matches[:name] || name
         ]
       end
 

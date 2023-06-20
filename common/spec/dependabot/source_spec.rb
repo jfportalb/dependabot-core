@@ -102,6 +102,13 @@ RSpec.describe Dependabot::Source do
         its(:directory) { is_expected.to be_nil }
       end
 
+      context "with a .github repo" do
+        let(:url) { "https://github.com/org/.github" }
+        its(:provider) { is_expected.to eq("github") }
+        its(:repo) { is_expected.to eq("org/.github") }
+        its(:directory) { is_expected.to be_nil }
+      end
+
       context "with no directory" do
         let(:url) { "https://github.com/org/abc/tree/master/readme.md" }
         its(:provider) { is_expected.to eq("github") }
@@ -192,6 +199,13 @@ RSpec.describe Dependabot::Source do
         its(:directory) { is_expected.to be_nil }
       end
 
+      context "with a .github repo" do
+        let(:url) { "https://ghes.mycorp.com/org/.github" }
+        its(:provider) { is_expected.to eq("github") }
+        its(:repo) { is_expected.to eq("org/.github") }
+        its(:directory) { is_expected.to be_nil }
+      end
+
       context "with no directory" do
         let(:url) { "https://ghes.mycorp.com/org/abc/tree/master/readme.md" }
         its(:provider) { is_expected.to eq("github") }
@@ -254,6 +268,13 @@ RSpec.describe Dependabot::Source do
       its(:provider) { is_expected.to eq("gitlab") }
       its(:repo) { is_expected.to eq("org/abc") }
       its(:directory) { is_expected.to eq("dir") }
+    end
+
+    context "with a GitLab changelog link" do
+      let(:url) { "https://gitlab.com/oauth-xx/oauth2/-/tree/v2.0.9/CHANGELOG.md" }
+      its(:provider) { is_expected.to eq("gitlab") }
+      its(:repo) { is_expected.to eq("oauth-xx/oauth2") }
+      its(:directory) { is_expected.to be_nil }
     end
 
     context "with a GitLab subgroup URL" do

@@ -89,7 +89,6 @@
     "-v", "${localWorkspaceFolder}/omnibus/Gemfile:/home/dependabot/dependabot-core/omnibus/Gemfile",
     "-v", "${localWorkspaceFolder}/omnibus/dependabot-omnibus.gemspec:/home/dependabot/dependabot-core/omnibus/dependabot-omnibus.gemspec",
     "-v", "${localWorkspaceFolder}/omnibus/lib:/home/dependabot/dependabot-core/omnibus/lib",
-    "-v", "${localWorkspaceFolder}/omnibus/spec:/home/dependabot/dependabot-core/omnibus/spec",
 
     "--cap-add=SYS_PTRACE", "--security-opt", "seccomp=unconfined"
   ],
@@ -125,9 +124,10 @@
   "extensions": [
     "rebornix.ruby",
     "castwide.solargraph",
-    "misogi.ruby-rubocop",
+    "LoranKloeze.ruby-rubocop-revived",
     "groksrc.ruby",
     "hoovercj.ruby-linter",
-    "miguel-savignano.ruby-symbols"
+    "miguel-savignano.ruby-symbols",
+    "koichisasada.vscode-rdbg"
   ]
 }

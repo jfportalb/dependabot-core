@@ -153,7 +153,7 @@ module Dependabot
             msg += body
             msg + "</details>\n"
           else
-            "\n\##{summary}\n\n#{body}"
+            "\n##{summary}\n\n#{body}"
           end
         end
 
@@ -245,11 +245,9 @@ module Dependabot
         end
 
         def sanitize_links_and_mentions(text, unsafe: false)
-          return text unless source.provider == "github"
-
           LinkAndMentionSanitizer.
             new(github_redirection_service: github_redirection_service).
-            sanitize_links_and_mentions(text: text, unsafe: unsafe)
+            sanitize_links_and_mentions(text: text, unsafe: unsafe, format_html: source_provider_supports_html?)
         end
 
         def sanitize_template_tags(text)

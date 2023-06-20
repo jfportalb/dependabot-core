@@ -76,6 +76,7 @@ RSpec.describe Dependabot::DependencyFile do
           "content" => "a",
           "directory" => "/",
           "type" => "file",
+          "mode" => "100644",
           "support_file" => false,
           "content_encoding" => "utf-8",
           "deleted" => false,
@@ -105,6 +106,7 @@ RSpec.describe Dependabot::DependencyFile do
           "name" => "Gemfile",
           "content" => "a",
           "directory" => "/",
+          "mode" => nil,
           "type" => "symlink",
           "support_file" => false,
           "symlink_target" => "nested/Gemfile",
@@ -135,6 +137,7 @@ RSpec.describe Dependabot::DependencyFile do
           "name" => "Gemfile",
           "content" => "a",
           "directory" => "/",
+          "mode" => "100644",
           "type" => "file",
           "support_file" => false,
           "content_encoding" => "utf-8",
@@ -164,6 +167,7 @@ RSpec.describe Dependabot::DependencyFile do
           "name" => "Gemfile",
           "content" => "a",
           "directory" => "/",
+          "mode" => "100644",
           "type" => "file",
           "support_file" => false,
           "content_encoding" => "utf-8",
@@ -193,6 +197,7 @@ RSpec.describe Dependabot::DependencyFile do
           "name" => "Gemfile",
           "content" => "a",
           "directory" => "/",
+          "mode" => "100644",
           "type" => "file",
           "support_file" => false,
           "content_encoding" => "utf-8",
@@ -222,6 +227,7 @@ RSpec.describe Dependabot::DependencyFile do
           "name" => "Gemfile",
           "content" => "a",
           "directory" => "/",
+          "mode" => "100644",
           "type" => "file",
           "support_file" => false,
           "content_encoding" => "utf-8",
@@ -252,6 +258,7 @@ RSpec.describe Dependabot::DependencyFile do
           "name" => "Gemfile",
           "content" => "a",
           "directory" => "/",
+          "mode" => "100644",
           "type" => "file",
           "support_file" => false,
           "content_encoding" => "utf-8",
@@ -280,6 +287,15 @@ RSpec.describe Dependabot::DependencyFile do
       let(:file1) { described_class.new(name: "Gemfile", content: "a") }
       let(:file2) do
         described_class.new(name: "Gemfile", content: "a", support_file: true)
+      end
+
+      specify { expect(file1).to eq(file2) }
+    end
+
+    context "when two dependency files are equal, but one is a vendored file" do
+      let(:file1) { described_class.new(name: "Gemfile", content: "a") }
+      let(:file2) do
+        described_class.new(name: "Gemfile", content: "a", vendored_file: true)
       end
 
       specify { expect(file1).to eq(file2) }
@@ -318,6 +334,20 @@ RSpec.describe Dependabot::DependencyFile do
 
       it "returns the unencoded content" do
         expect(file.decoded_content).to eq("abc")
+      end
+    end
+  end
+
+  describe "#vendored_file?" do
+    it "is false by default" do
+      expect(file.vendored_file?).to be false
+    end
+
+    context "when set to true during creation" do
+      let(:file) { described_class.new(name: "Gemfile", content: "a", vendored_file: true) }
+
+      it "is true" do
+        expect(file.vendored_file?).to be true
       end
     end
   end

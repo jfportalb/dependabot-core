@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
+require "dependabot/version"
 require "dependabot/utils"
-require "rubygems_version_patch"
 
 # Python versions can include a local version identifier, which Ruby can't
 # parse. This class augments Gem::Version with local version identifier info.
@@ -9,7 +9,7 @@ require "rubygems_version_patch"
 
 module Dependabot
   module Python
-    class Version < Gem::Version
+    class Version < Dependabot::Version
       attr_reader :epoch
       attr_reader :local_version
       attr_reader :post_release_version
@@ -18,7 +18,7 @@ module Dependabot
       VERSION_PATTERN = 'v?([1-9][0-9]*!)?[0-9]+[0-9a-zA-Z]*(?>\.[0-9a-zA-Z]+)*' \
                         '(-[0-9A-Za-z]+(\.[0-9a-zA-Z]+)*)?' \
                         '(\+[0-9a-zA-Z]+(\.[0-9a-zA-Z]+)*)?'
-      ANCHORED_VERSION_PATTERN = /\A\s*(#{VERSION_PATTERN})?\s*\z/.freeze
+      ANCHORED_VERSION_PATTERN = /\A\s*(#{VERSION_PATTERN})?\s*\z/
 
       def self.correct?(version)
         return false if version.nil?

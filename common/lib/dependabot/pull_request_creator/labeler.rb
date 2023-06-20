@@ -5,7 +5,7 @@ require "dependabot/pull_request_creator"
 module Dependabot
   class PullRequestCreator
     class Labeler
-      DEPENDENCIES_LABEL_REGEX = %r{^[^/]*dependenc[^/]+$}i.freeze
+      DEPENDENCIES_LABEL_REGEX = %r{^[^/]*dependenc[^/]+$}i
       DEFAULT_DEPENDENCIES_LABEL = "dependencies"
       DEFAULT_SECURITY_LABEL = "security"
 
@@ -174,7 +174,11 @@ module Dependabot
       end
 
       def default_labels_for_pr
-        if custom_labels then custom_labels & labels
+        if custom_labels
+          # Azure does not have centralised labels
+          return custom_labels if source.provider == "azure"
+
+          custom_labels & labels
         else
           [
             default_dependencies_label,

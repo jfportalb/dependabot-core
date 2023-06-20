@@ -278,8 +278,9 @@ RSpec.describe Dependabot::Terraform::FileParser do
       end
 
       it "has the right details for the dependency (which uses git@github.com)" do
-        expect(subject[3].name).to \
-          eq("github_ssh_without_protocol::github::cloudposse/terraform-aws-jenkins::tags/0.4.0")
+        expect(subject[3].name).to eq(
+          "github_ssh_without_protocol::github::cloudposse/terraform-aws-jenkins::tags/0.4.0"
+        )
         expect(subject[3].version).to eq("0.4.0")
         expect(subject[3].requirements).to eq([{
           requirement: nil,
@@ -868,6 +869,34 @@ RSpec.describe Dependabot::Terraform::FileParser do
 
         expect(dependency.version).to eq("2.2.1")
         expect(dependency.requirements.first[:source][:module_identifier]).to eq("hashicorp/random")
+      end
+    end
+
+    context "with a private module with directory suffix" do
+      let(:files) { project_dependency_files("private_module_with_dir_suffix") }
+      its(:length) { is_expected.to eq(1) }
+
+      describe "default registry with version" do
+        subject(:dependency) { dependencies.find { |d| d.name == "org/name/provider" } }
+        let(:expected_requirements) do
+          [{
+            requirement: "1.2.3",
+            groups: [],
+            file: "main.tf",
+            source: {
+              type: "registry",
+              registry_hostname: "registry.example.com",
+              module_identifier: "org/name/provider"
+            }
+          }]
+        end
+
+        it "has the right details" do
+          expect(dependency).to be_a(Dependabot::Dependency)
+          expect(dependency.name).to eq("org/name/provider")
+          expect(dependency.version).to eq("1.2.3")
+          expect(dependency.requirements).to eq(expected_requirements)
+        end
       end
     end
 

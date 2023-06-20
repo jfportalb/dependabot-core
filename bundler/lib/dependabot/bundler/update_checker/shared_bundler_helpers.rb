@@ -14,19 +14,15 @@ module Dependabot
   module Bundler
     class UpdateChecker
       module SharedBundlerHelpers
-        GIT_REGEX = /reset --hard [^\s]*` in directory (?<path>[^\s]*)/.freeze
-        GIT_REF_REGEX = /not exist in the repository (?<path>[^\s]*)\./.freeze
-        PATH_REGEX = /The path `(?<path>.*)` does not exist/.freeze
+        GIT_REGEX = /reset --hard [^\s]*` in directory (?<path>[^\s]*)/
+        GIT_REF_REGEX = /not exist in the repository (?<path>[^\s]*)\./
+        PATH_REGEX = /The path `(?<path>.*)` does not exist/
 
         module BundlerErrorPatterns
-          MISSING_AUTH_REGEX =
-            /bundle config (?<source>.*) username:password/.freeze
-          BAD_AUTH_REGEX =
-            /Bad username or password for (?<source>.*)\.$/.freeze
-          BAD_CERT_REGEX =
-            /verify the SSL certificate for (?<source>.*)\.$/.freeze
-          HTTP_ERR_REGEX =
-            /Could not fetch specs from (?<source>.*)$/.freeze
+          MISSING_AUTH_REGEX = /bundle config (?<source>.*) username:password/
+          BAD_AUTH_REGEX = /Bad username or password for (?<source>.*)\.$/
+          BAD_CERT_REGEX = /verify the SSL certificate for (?<source>.*)\.$/
+          HTTP_ERR_REGEX = /Could not fetch specs from (?<source>.*)$/
         end
 
         RETRYABLE_ERRORS = %w(
@@ -123,7 +119,8 @@ module Dependabot
             # We don't have access to one of repos required
             raise Dependabot::GitDependenciesNotReachable, bad_uris.uniq
           when "Bundler::GemNotFound", "Gem::InvalidSpecificationException",
-               "Bundler::VersionConflict", "Bundler::CyclicDependencyError"
+               "Bundler::VersionConflict", "Bundler::CyclicDependencyError",
+               "Bundler::SolveFailure"
             # Bundler threw an error during resolution. Any of:
             # - the gem doesn't exist in any of the specified sources
             # - the gem wasn't specified properly

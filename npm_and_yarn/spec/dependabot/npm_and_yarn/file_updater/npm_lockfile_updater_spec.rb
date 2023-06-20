@@ -180,6 +180,15 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::NpmLockfileUpdater do
       end
     end
 
+    context "with engines-strict and a version that won't work with Dependabot" do
+      let(:files) { project_dependency_files("npm8/engines") }
+
+      it "raises a helpful error" do
+        expect { updated_npm_lock_content }.
+          to raise_error(Dependabot::DependencyFileNotResolvable)
+      end
+    end
+
     context "when the lockfile does not have indentation" do
       let(:files) { project_dependency_files("npm8/simple_no_indentation") }
 
@@ -265,6 +274,28 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::NpmLockfileUpdater do
     end
   end
 
+  context "workspace with outdated deps not in root package.json" do
+    let(:dependency_name) { "@swc/core" }
+    let(:version) { "1.3.44" }
+    let(:previous_version) { "1.3.40" }
+    let(:requirements) do
+      [{
+        file: "packages/bump-version-for-cron/package.json",
+        requirement: "^1.3.37",
+        groups: ["dependencies"],
+        source: nil
+      }]
+    end
+    let(:previous_requirements) { requirements }
+
+    let(:files) { project_dependency_files("npm8/workspace_outdated_deps_not_in_root_package_json") }
+
+    it "updates" do
+      expect(JSON.parse(updated_npm_lock_content)["packages"]["node_modules/@swc/core"]["version"]).
+        to eq("1.3.44")
+    end
+  end
+
   %w(npm6 npm8).each do |npm_version|
     describe "#{npm_version} updates" do
       let(:files) { project_dependency_files("#{npm_version}/simple") }
@@ -297,6 +328,58 @@ RSpec.describe Dependabot::NpmAndYarn::FileUpdater::NpmLockfileUpdater do
         it "cleans up from field and successfully updates" do
           expect(JSON.parse(updated_npm_lock_content)["dependencies"]["fetch-factory"]["version"]).
             to eq("0.0.2")
+        end
+      end
+
+      context "when updating both top level and sub dependencies" do
+        let(:files) do
+          project_dependency_files("#{npm_version}/transitive_dependency_locked_by_intermediate_top_and_sub")
+        end
+        let(:dependencies) do
+          [
+            Dependabot::Dependency.new(
+              name: "@dependabot-fixtures/npm-transitive-dependency",
+              version: "1.0.1",
+              previous_version: "1.0.0",
+              requirements: [{
+                file: "package.json",
+                requirement: "1.0.1",
+                groups: ["dependencies"],
+                source: {
+                  type: "registry",
+                  url: "https://registry.npmjs.org"
+                }
+              }],
+              previous_requirements: [{
+                file: "package.json",
+                requirement: "1.0.0",
+                groups: ["dependencies"],
+                source: {
+                  type: "registry",
+                  url: "https://registry.npmjs.org"
+                }
+              }],
+              package_manager: "npm_and_yarn"
+            ),
+            Dependabot::Dependency.new(
+              name: "@dependabot-fixtures/npm-intermediate-dependency",
+              version: "0.0.2",
+              previous_version: "0.0.1",
+              requirements: [],
+              previous_requirements: [],
+              package_manager: "npm_and_yarn"
+            )
+          ]
+        end
+
+        it "updates top level and sub dependencies" do
+          expected_updated_npm_lock_content = fixture(
+            "updated_projects",
+            npm_version,
+            "transitive_dependency_locked_by_intermediate_top_and_sub",
+            "package-lock.json"
+          )
+          expect(updated_npm_lock_content).to eq(expected_updated_npm_lock_content)
         end
       end
     end

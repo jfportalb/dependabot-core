@@ -6,6 +6,7 @@ require "dependabot/dependency"
 require "dependabot/file_parsers"
 require "dependabot/file_parsers/base"
 require "dependabot/shared_helpers"
+require "dependabot/npm_and_yarn/helpers"
 require "dependabot/npm_and_yarn/native_helpers"
 require "dependabot/npm_and_yarn/version"
 require "dependabot/git_metadata_fetcher"
@@ -29,13 +30,14 @@ module Dependabot
           (?:\#(?=[\^~=<>*])(?<semver>.+))|
           (?:\#(?<ref>.+))
         )?$
-      }ix.freeze
+      }ix
 
       def parse
         dependency_set = DependencySet.new
         dependency_set += manifest_dependencies
         dependency_set += lockfile_dependencies
-        dependencies = dependency_set.dependencies
+
+        dependencies = Helpers.dependencies_with_all_versions_metadata(dependency_set)
 
         # TODO: Currently, Dependabot can't handle dependencies that have both
         # a git source *and* a non-git source. Fix that!
@@ -84,7 +86,7 @@ module Dependabot
       end
 
       def lockfile_dependencies
-        DependencySet.new(lockfile_parser.parse)
+        lockfile_parser.parse_set
       end
 
       def build_dependency(file:, type:, name:, requirement:)
@@ -93,7 +95,8 @@ module Dependabot
           requirement: requirement,
           manifest_name: file.name
         )
-        version = version_for(name, requirement, file.name)
+        version = version_for(requirement, lockfile_details)
+
         return if lockfile_details && !version
         return if ignore_requirement?(requirement)
         return if workspace_package_names.include?(name)
@@ -101,7 +104,7 @@ module Dependabot
         # TODO: Handle aliased packages:
         # https://github.com/dependabot/dependabot-core/pull/1115
         #
-        # Ignore dependencies with an alias in the name (only supported by Yarn)
+        # Ignore dependencies with an alias in the name
         # Example: "my-fetch-factory@npm:fetch-factory"
         return if aliased_package_name?(name)
 
@@ -113,7 +116,7 @@ module Dependabot
             requirement: requirement_for(requirement),
             file: file.name,
             groups: [type],
-            source: source_for(name, requirement, file.name)
+            source: source_for(name, requirement, lockfile_details)
           }]
         )
       end
@@ -162,29 +165,21 @@ module Dependabot
           package_files.filter_map { |f| JSON.parse(f.content)["name"] }
       end
 
-      def version_for(name, requirement, manifest_name)
+      def version_for(requirement, lockfile_details)
         if git_url_with_semver?(requirement)
-          semver_version = semver_version_for(name, requirement, manifest_name)
+          semver_version = semver_version_for(lockfile_details)
           return semver_version if semver_version
 
-          git_revision = git_revision_for(name, requirement, manifest_name)
+          git_revision = git_revision_for(lockfile_details)
           version_from_git_revision(requirement, git_revision) || git_revision
         elsif git_url?(requirement)
-          git_revision_for(name, requirement, manifest_name)
+          git_revision_for(lockfile_details)
         else
-          semver_version_for(name, requirement, manifest_name)
+          semver_version_for(lockfile_details)
         end
       end
 
-      def git_revision_for(name, requirement, manifest_name)
-        return unless git_url?(requirement)
-
-        lockfile_details = lockfile_parser.lockfile_details(
-          dependency_name: name,
-          requirement: requirement,
-          manifest_name: manifest_name
-        )
-
+      def git_revision_for(lockfile_details)
         [
           lockfile_details&.fetch("version", nil)&.split("#")&.last,
           lockfile_details&.fetch("resolved", nil)&.split("#")&.last,
@@ -221,29 +216,18 @@ module Dependabot
         nil
       end
 
-      def semver_version_for(name, requirement, manifest_name)
-        lock_version = lockfile_parser.lockfile_details(
-          dependency_name: name,
-          requirement: requirement,
-          manifest_name: manifest_name
-        )&.fetch("version", nil)
-
-        # This line is to guard against improperly formatted versions in a
-        # lockfile, such as additional characters. NPM/yarn fixes these when
-        # running an update, so we can safely ignore these versions.
-        return unless version_class.correct?(lock_version)
-
-        lock_version
+      def semver_version_for(lockfile_details)
+        version_class.semver_for(lockfile_details&.fetch("version", ""))
       end
 
-      def source_for(name, requirement, manifest_name)
+      def source_for(name, requirement, lockfile_details)
         return git_source_for(requirement) if git_url?(requirement)
 
-        resolved_url = lockfile_parser.lockfile_details(
-          dependency_name: name,
-          requirement: requirement,
-          manifest_name: manifest_name
-        )&.fetch("resolved", nil)
+        resolved_url = lockfile_details&.fetch("resolved", nil)
+
+        resolution = lockfile_details&.fetch("resolution", nil)
+        package_match = resolution&.match(/__archiveUrl=(?<package_url>.+)/)
+        resolved_url = CGI.unescape(package_match.named_captures.fetch("package_url", "")) if package_match
 
         return unless resolved_url
         return unless resolved_url.start_with?("http")
@@ -305,11 +289,22 @@ module Dependabot
       end
 
       def url_for_relevant_cred(resolved_url)
+        resolved_url_host = URI(resolved_url).host
+
         credential_matching_url =
           credentials.
           select { |cred| cred["type"] == "npm_registry" }.
           sort_by { |cred| cred["registry"].length }.
-          find { |details| resolved_url.include?(details["registry"]) }
+          find do |details|
+            next true if resolved_url_host == details["registry"]
+
+            uri = if details["registry"]&.include?("://")
+                    URI(details["registry"])
+                  else
+                    URI("https://#{details['registry']}")
+                  end
+            resolved_url_host == uri.host
+          end
 
         return unless credential_matching_url
 
@@ -326,6 +321,7 @@ module Dependabot
               dependency_files.
               select { |f| f.name.end_with?("package.json") }.
               reject { |f| f.name == "package.json" }.
+              reject { |f| f.name.include?("node_modules/") }.
               reject(&:support_file?)
 
             [

@@ -2,6 +2,8 @@
 
 require "dependabot/file_updaters"
 require "dependabot/file_updaters/base"
+require "dependabot/file_updaters/vendor_updater"
+require "dependabot/file_updaters/artifact_updater"
 require "dependabot/npm_and_yarn/dependency_files_filterer"
 require "dependabot/npm_and_yarn/sub_dependency_files_filterer"
 
@@ -11,6 +13,7 @@ module Dependabot
       require_relative "file_updater/package_json_updater"
       require_relative "file_updater/npm_lockfile_updater"
       require_relative "file_updater/yarn_lockfile_updater"
+      require_relative "file_updater/pnpm_lockfile_updater"
 
       class NoChangeError < StandardError
         def initialize(message:, error_context:)
@@ -28,7 +31,8 @@ module Dependabot
           /^package\.json$/,
           /^package-lock\.json$/,
           /^npm-shrinkwrap\.json$/,
-          /^yarn\.lock$/
+          /^yarn\.lock$/,
+          /^pnpm-lock\.yaml$/
         ]
       end
 
@@ -53,10 +57,57 @@ module Dependabot
           )
         end
 
-        updated_files
+        vendor_updated_files(updated_files)
       end
 
       private
+
+      def vendor_updated_files(updated_files)
+        base_dir = updated_files.first.directory
+        pnp_updater.updated_files(base_directory: base_dir, only_paths: [".pnp.cjs", ".pnp.data.json"]).each do |file|
+          updated_files << file
+        end
+        vendor_updater.updated_vendor_cache_files(base_directory: base_dir).each { |file| updated_files << file }
+        install_state_updater.updated_files(base_directory: base_dir).each do |file|
+          updated_files << file
+        end
+
+        updated_files
+      end
+
+      # Dynamically fetch the vendor cache folder from yarn
+      def vendor_cache_dir
+        return @vendor_cache_dir if defined?(@vendor_cache_dir)
+
+        @vendor_cache_dir = Helpers.fetch_yarnrc_yml_value("cacheFolder", "./.yarn/cache")
+      end
+
+      def install_state_path
+        return @install_state_path if defined?(@install_state_path)
+
+        @install_state_path = Helpers.fetch_yarnrc_yml_value("installStatePath", "./.yarn/install-state.gz")
+      end
+
+      def vendor_updater
+        Dependabot::FileUpdaters::VendorUpdater.new(
+          repo_contents_path: repo_contents_path,
+          vendor_dir: vendor_cache_dir
+        )
+      end
+
+      def install_state_updater
+        Dependabot::FileUpdaters::ArtifactUpdater.new(
+          repo_contents_path: repo_contents_path,
+          target_directory: install_state_path
+        )
+      end
+
+      def pnp_updater
+        Dependabot::FileUpdaters::ArtifactUpdater.new(
+          repo_contents_path: repo_contents_path,
+          target_directory: "./"
+        )
+      end
 
       def filtered_dependency_files
         @filtered_dependency_files ||=
@@ -97,6 +148,12 @@ module Dependabot
           select { |f| f.name.end_with?("yarn.lock") }
       end
 
+      def pnpm_locks
+        @pnpm_locks ||=
+          filtered_dependency_files.
+          select { |f| f.name.end_with?("pnpm-lock.yaml") }
+      end
+
       def shrinkwraps
         @shrinkwraps ||=
           filtered_dependency_files.
@@ -112,6 +169,10 @@ module Dependabot
 
       def yarn_lock_changed?(yarn_lock)
         yarn_lock.content != updated_yarn_lock_content(yarn_lock)
+      end
+
+      def pnpm_lock_changed?(pnpm_lock)
+        pnpm_lock.content != updated_pnpm_lock_content(pnpm_lock)
       end
 
       def package_lock_changed?(package_lock)
@@ -143,6 +204,15 @@ module Dependabot
           )
         end
 
+        pnpm_locks.each do |pnpm_lock|
+          next unless pnpm_lock_changed?(pnpm_lock)
+
+          updated_files << updated_file(
+            file: pnpm_lock,
+            content: updated_pnpm_lock_content(pnpm_lock)
+          )
+        end
+
         package_locks.each do |package_lock|
           next unless package_lock_changed?(package_lock)
 
@@ -170,11 +240,28 @@ module Dependabot
           yarn_lockfile_updater.updated_yarn_lock_content(yarn_lock)
       end
 
+      def updated_pnpm_lock_content(pnpm_lock)
+        @updated_pnpm_lock_content ||= {}
+        @updated_pnpm_lock_content[pnpm_lock.name] ||=
+          pnpm_lockfile_updater.updated_pnpm_lock_content(pnpm_lock)
+      end
+
       def yarn_lockfile_updater
         @yarn_lockfile_updater ||=
           YarnLockfileUpdater.new(
             dependencies: dependencies,
             dependency_files: dependency_files,
+            repo_contents_path: repo_contents_path,
+            credentials: credentials
+          )
+      end
+
+      def pnpm_lockfile_updater
+        @pnpm_lockfile_updater ||=
+          PnpmLockfileUpdater.new(
+            dependencies: dependencies,
+            dependency_files: dependency_files,
+            repo_contents_path: repo_contents_path,
             credentials: credentials
           )
       end

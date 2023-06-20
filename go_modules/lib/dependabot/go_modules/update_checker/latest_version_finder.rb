@@ -22,10 +22,10 @@ module Dependabot
           /unrecognized import path/,
           /malformed module path/,
           # (Private) module could not be fetched
-          /module .*: git ls-remote .*: exit status 128/m.freeze
+          /module .*: git ls-remote .*: exit status 128/m
         ].freeze
-        INVALID_VERSION_REGEX = /version "[^"]+" invalid/m.freeze
-        PSEUDO_VERSION_REGEX = /\b\d{14}-[0-9a-f]{12}$/.freeze
+        INVALID_VERSION_REGEX = /version "[^"]+" invalid/m
+        PSEUDO_VERSION_REGEX = /\b\d{14}-[0-9a-f]{12}$/
 
         def initialize(dependency:, dependency_files:, credentials:,
                        ignored_versions:, security_advisories:, raise_on_ignored: false,
@@ -52,18 +52,16 @@ module Dependabot
         attr_reader :dependency, :dependency_files, :credentials, :ignored_versions, :security_advisories
 
         def fetch_latest_version
-          return dependency.version if PSEUDO_VERSION_REGEX.match?(dependency.version)
-
           candidate_versions = available_versions
           candidate_versions = filter_prerelease_versions(candidate_versions)
           candidate_versions = filter_ignored_versions(candidate_versions)
+          # Adding the psuedo-version to the list to avoid downgrades
+          candidate_versions << dependency.version if PSEUDO_VERSION_REGEX.match?(dependency.version)
 
           candidate_versions.max
         end
 
         def fetch_lowest_security_fix_version
-          return dependency.version if PSEUDO_VERSION_REGEX.match?(dependency.version)
-
           relevant_versions = available_versions
           relevant_versions = filter_prerelease_versions(relevant_versions)
           relevant_versions = Dependabot::UpdateCheckers::VersionFilters.filter_vulnerable_versions(relevant_versions,
@@ -75,6 +73,10 @@ module Dependabot
         end
 
         def available_versions
+          @available_versions ||= fetch_available_versions
+        end
+
+        def fetch_available_versions
           SharedHelpers.in_a_temporary_directory do
             SharedHelpers.with_git_configured(credentials: credentials) do
               manifest = parse_manifest
@@ -90,7 +92,11 @@ module Dependabot
               # Turn off the module proxy for private dependencies
               env = { "GOPRIVATE" => @goprivate }
 
-              versions_json = SharedHelpers.run_shell_command("go list -m -versions -json #{dependency.name}", env: env)
+              versions_json = SharedHelpers.run_shell_command(
+                "go list -m -versions -json #{dependency.name}",
+                fingerprint: "go list -m -versions -json <dependency_name>",
+                env: env
+              )
               version_strings = JSON.parse(versions_json)["Versions"]
 
               return [version_class.new(dependency.version)] if version_strings.nil?
@@ -143,10 +149,10 @@ module Dependabot
         end
 
         def filter_lower_versions(versions_array)
-          return versions_array unless dependency.version && version_class.correct?(dependency.version)
+          return versions_array unless dependency.numeric_version
 
           versions_array.
-            select { |version| version > version_class.new(dependency.version) }
+            select { |version| version > dependency.numeric_version }
         end
 
         def filter_ignored_versions(versions_array)
@@ -162,9 +168,8 @@ module Dependabot
         def wants_prerelease?
           @wants_prerelease ||=
             begin
-              current_version = dependency.version
-              current_version && version_class.correct?(current_version) &&
-                version_class.new(current_version).prerelease?
+              current_version = dependency.numeric_version
+              current_version&.prerelease?
             end
         end
 
@@ -173,13 +178,11 @@ module Dependabot
         end
 
         def requirement_class
-          Utils.requirement_class_for_package_manager(
-            dependency.package_manager
-          )
+          dependency.requirement_class
         end
 
         def version_class
-          Utils.version_class_for_package_manager(dependency.package_manager)
+          dependency.version_class
         end
       end
     end

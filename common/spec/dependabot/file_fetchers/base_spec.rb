@@ -7,6 +7,7 @@ require "spec_helper"
 require "dependabot/source"
 require "dependabot/file_fetchers/base"
 require "dependabot/clients/codecommit"
+require "dependabot/shared_helpers"
 
 RSpec.describe Dependabot::FileFetchers::Base do
   let(:source) do
@@ -330,6 +331,22 @@ RSpec.describe Dependabot::FileFetchers::Base do
           end
 
           its(:content) { is_expected.to eq("öäöä") }
+        end
+
+        context "when it includes a BOM" do
+          before do
+            stub_request(:get, url + "requirements.txt?ref=sha").
+              with(headers: { "Authorization" => "token token" }).
+              to_return(
+                status: 200,
+                body: fixture("github", "bom.json"),
+                headers: { "content-type" => "application/json" }
+              )
+          end
+
+          it "is stripped" do
+            expect(subject.content.bytes.first(3)).not_to eq(["EF".hex, "BB".hex, "BF".hex])
+          end
         end
 
         context "when the file is a directory" do
@@ -758,6 +775,21 @@ RSpec.describe Dependabot::FileFetchers::Base do
           end
 
           its(:content) { is_expected.to eq("öäöä") }
+        end
+
+        context "when it includes a BOM" do
+          before do
+            stub_request(:get, url + "requirements.txt?ref=sha").
+              to_return(
+                status: 200,
+                body: fixture("gitlab", "bom.json"),
+                headers: { "content-type" => "application/json" }
+              )
+          end
+
+          it "is stripped" do
+            expect(subject.content.bytes.first(3)).not_to eq(["EF".hex, "BB".hex, "BF".hex])
+          end
         end
       end
 
@@ -1551,6 +1583,138 @@ RSpec.describe Dependabot::FileFetchers::Base do
 
         it "raises a not found error" do
           expect { subject }.to raise_error(Dependabot::RepoNotFound)
+        end
+      end
+
+      context "when the branch can't be found" do
+        let(:branch) do
+          "notfound"
+        end
+
+        it "raises a not found error" do
+          expect { subject }.to raise_error(Dependabot::BranchNotFound)
+        end
+      end
+
+      context "when the submodule can't be reached" do
+        let(:repo) do
+          "dependabot-fixtures/go-modules-app-with-inaccessible-submodules"
+        end
+        let(:branch) do
+          "with-git-urls"
+        end
+
+        it "does not raise an error" do
+          clone_repo_contents
+          expect(`ls #{repo_contents_path}`).to include("README")
+        end
+      end
+
+      context "when the repo exceeds available disk space" do
+        it "raises an out of disk error" do
+          allow(Dependabot::SharedHelpers).
+            to receive(:run_shell_command).
+            and_raise(
+              Dependabot::SharedHelpers::HelperSubprocessFailed.new(
+                message: "fatal: write error: No space left on device",
+                error_context: {}
+              )
+            )
+
+          expect { subject }.to raise_error(Dependabot::OutOfDisk)
+        end
+      end
+    end
+  end
+
+  context "with submodules" do
+    let(:repo) { "dependabot-fixtures/go-modules-app-with-git-submodules" }
+    let(:repo_contents_path) { Dir.mktmpdir }
+    let(:submodule_contents_path) { File.join(repo_contents_path, "examplelib") }
+
+    before do
+      allow(Dependabot::SharedHelpers).
+        to receive(:run_shell_command).and_call_original
+    end
+
+    after { FileUtils.rm_rf(repo_contents_path) }
+
+    describe "#clone_repo_contents" do
+      it "does not clone submodules by default" do
+        file_fetcher_instance.clone_repo_contents
+
+        expect(Dependabot::SharedHelpers).
+          to have_received(:run_shell_command).with(
+            /\Agit clone .* --no-recurse-submodules/
+          )
+        expect(`ls -1 #{submodule_contents_path}`.split).to_not include("go.mod")
+      end
+
+      context "with a source commit" do
+        let(:source_commit) { "5c7e92a4860382fd31336872f0fe79a848669c4d" }
+
+        it "does not fetch/reset submodules by default" do
+          file_fetcher_instance.clone_repo_contents
+
+          expect(Dependabot::SharedHelpers).
+            to have_received(:run_shell_command).with(
+              /\Agit fetch .* --no-recurse-submodules/
+            )
+          expect(Dependabot::SharedHelpers).
+            to have_received(:run_shell_command).with(
+              /\Agit reset .* --no-recurse-submodules/
+            )
+        end
+      end
+
+      context "when #recurse_submodules_when_cloning? returns true" do
+        let(:child_class) do
+          Class.new(described_class) do
+            def self.required_files_in?(filenames)
+              filenames.include?("go.mod")
+            end
+
+            def self.required_files_message
+              "Repo must contain a go.mod."
+            end
+
+            private
+
+            def fetch_files
+              [fetch_file_from_host("go.mod")]
+            end
+
+            def recurse_submodules_when_cloning?
+              true
+            end
+          end
+        end
+
+        it "clones submodules" do
+          file_fetcher_instance.clone_repo_contents
+
+          expect(Dependabot::SharedHelpers).
+            to have_received(:run_shell_command).with(
+              /\Agit clone .* --recurse-submodules --shallow-submodules/
+            )
+          expect(`ls -1 #{submodule_contents_path}`.split).to include("go.mod")
+        end
+
+        context "with a source commit" do
+          let(:source_commit) { "5c7e92a4860382fd31336872f0fe79a848669c4d" }
+
+          it "fetches/resets submodules if necessary" do
+            file_fetcher_instance.clone_repo_contents
+
+            expect(Dependabot::SharedHelpers).
+              to have_received(:run_shell_command).with(
+                /\Agit fetch .* --recurse-submodules=on-demand/
+              )
+            expect(Dependabot::SharedHelpers).
+              to have_received(:run_shell_command).with(
+                /\Agit reset .* --recurse-submodules/
+              )
+          end
         end
       end
     end

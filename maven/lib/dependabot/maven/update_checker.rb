@@ -68,8 +68,7 @@ module Dependabot
             property_details(property_name: prop_name, callsite_pom: pom)&.
             fetch(:file)
 
-          declaration_pom_name == "remote_pom.xml" ||
-            declaration_pom_name&.end_with?("pom_parent.xml")
+          declaration_pom_name == "remote_pom.xml"
         end
       end
 
@@ -138,7 +137,7 @@ module Dependabot
       def property_value_finder
         @property_value_finder ||=
           Maven::FileParser::PropertyValueFinder.
-          new(dependency_files: dependency_files)
+          new(dependency_files: dependency_files, credentials: credentials)
       end
 
       def version_comes_from_multi_dependency_property?

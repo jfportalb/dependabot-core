@@ -3,10 +3,17 @@
 set -e
 
 shellcheck \
+  --source-path=SCRIPTDIR \
   ./bin/ci-test \
   ./bin/docker-dev-shell \
   ./bin/lint \
   ./*/helpers/*/build \
   ./*/helpers/build \
   ./*/script/* \
+  ./script/* \
+  ./updater/bin/run \
   "$@"
+
+bundle exec rubocop
+
+flake8 python/helpers/. --count --exclude=./.*,./python/spec/fixtures --show-source --statistics

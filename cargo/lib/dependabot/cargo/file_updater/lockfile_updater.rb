@@ -14,9 +14,9 @@ module Dependabot
         LOCKFILE_ENTRY_REGEX = /
           \[\[package\]\]\n
           (?:(?!^\[(\[package|metadata)).)+
-        /mx.freeze
+        /mx
 
-        LOCKFILE_CHECKSUM_REGEX = /^"checksum .*$/.freeze
+        LOCKFILE_CHECKSUM_REGEX = /^"checksum .*$/
 
         def initialize(dependencies:, dependency_files:, credentials:)
           @dependencies = dependencies
@@ -32,7 +32,7 @@ module Dependabot
             SharedHelpers.with_git_configured(credentials: credentials) do
               # Shell out to Cargo, which handles everything for us, and does
               # so without doing an install (so it's fast).
-              run_shell_command("cargo update -p #{dependency_spec}")
+              run_shell_command("cargo update -p #{dependency_spec}", fingerprint: "cargo update -p <dependency_spec>")
             end
 
             updated_lockfile = File.read("Cargo.lock")
@@ -135,7 +135,7 @@ module Dependabot
           %(name = "#{dependency.name}"\nversion = "#{dependency.version}")
         end
 
-        def run_shell_command(command)
+        def run_shell_command(command, fingerprint:)
           start = Time.now
           command = SharedHelpers.escape_command(command)
           stdout, process = Open3.capture2e(command)
@@ -145,10 +145,24 @@ module Dependabot
           # returns a non-zero status
           return if process.success?
 
+          if stdout.include?("usage of sparse registries requires `-Z sparse-registry`")
+            raise Dependabot::DependencyFileNotEvaluatable, "Dependabot only supports toolchain 1.68 and up."
+          end
+
+          # package doesn't exist in the index
+          if (match = stdout.match(/no matching package named `([^`]+)` found/))
+            raise Dependabot::DependencyFileNotResolvable, match[1]
+          end
+
+          if (match = /error: no matching package found\nsearched package name: `([^`]+)`/m.match(stdout))
+            raise Dependabot::DependencyFileNotResolvable, match[1]
+          end
+
           raise SharedHelpers::HelperSubprocessFailed.new(
             message: stdout,
             error_context: {
               command: command,
+              fingerprint: fingerprint,
               time_taken: time_taken,
               process_exit_value: process.to_s
             }
